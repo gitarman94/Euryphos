@@ -252,6 +252,19 @@ The earlier API activity timestamp run **[45630523155](https://github.com/gitarm
 
 GitHub Actions run **[45630111011](https://github.com/gitarman94/Euryphos-Agent/actions/runs/45630111011)** on agent source commit `333e9c8f5c31057d7a31e701daaf3342bfb0dfb3` completed successfully on 2026-11-25. It passed `go test ./...`, `go vet ./...`, Linux build, Windows amd64 cross-build, and macOS arm64 cross-build. This includes claim-aware result reporting, persistent local job journal, pre-execution start acknowledgement, periodic device/job heartbeats, and bounded four-hour-default job timeout (60 seconds–24 hours). Agent documentation synchronization run **[45631447132](https://github.com/gitarman94/Euryphos-Agent/actions/runs/45631447132)** also passed after the overdue-heartbeat contract was documented. Cross-builds do not certify runtime support on those systems.
 
+### New overdue-job workflow commits — validation pending
+
+The following source and regression-test commits are now on the server repository's main branch:
+
+- `620281bc78477e342b96bbee7c5fcec1cb1e3bbe` — durable alert table, queue API, acknowledgement, indeterminate resolution, and restricted retry.
+- `4b7cf2370612777e0321cdcac2afae12ceeb752e` — queue, audit, recovery, late-result, retry-confirmation, and retry-allowlist tests.
+- `dfb14bbb7547dcc92482af9295c0d5acd611f018`, `bbc026463d73f50a0ac4d6da09811838b89d1a8b`, `5129dd8c667953fc13c84d626935d3f73222c068` — administrator console queue, pagination, and embedded JavaScript string fix.
+- `e2621396c22b3b4d8e927348c6cac6a7d0318f98` — bounded alert reconciliation batches and throttled last-seen updates.
+- `bffde59e20b7264b6ab13b7a44e40a6f4e0ab114` — device-authenticated claim-resolution response for agent journal retirement.
+- `993af998837690ee87a36161422f1cc81b344ef6`, `2754ab7ba856a7b2e15823090fd5776e088b71d2` — regression coverage for administrator-authorized journal retirement and receive-lease reclaim.
+
+The corresponding agent commits are `f8122ac58801f8e286ac7e30c2a1989e4d2aa5b3`, `f786a4faad149f0a6f3ae4d04f1f20fb0f8d6898`, `602a41f5c76c7bac95dc2c06aaea22b59249a2bc`, and `cebed6eb687530ada40c4c5385bd02e20bafcacc`. These implement the claim-resolution handshake and agent regression tests. **No CI result has yet been verified for these newest commits in this work session.** The earlier successful run `45630111011` predates them and is not evidence that this change set passes.
+
 ### What has not been demonstrated
 
 No real running server + installed agent end-to-end test has been completed. No actual Linux or Windows service operation has been runtime-tested. Cross-compilation does not certify runtime compatibility. No first tagged GitHub server release has been published, and no fresh install, in-place upgrade, failed-upgrade rollback, reboot, or database restore has been tested in a Debian 13 Proxmox CT. Cryptographic release signing/provenance, fleet load benchmarks, penetration testing, and supported-OS certification remain incomplete.
