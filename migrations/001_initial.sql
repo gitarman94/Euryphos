@@ -138,6 +138,9 @@ CREATE TABLE IF NOT EXISTS device_network_interfaces (
     connection_type TEXT NOT NULL DEFAULT '',
     state TEXT NOT NULL DEFAULT '',
     addresses_json TEXT NOT NULL DEFAULT '[]',
+    dhcp_enabled INTEGER NOT NULL DEFAULT 0,
+    dhcp_server TEXT NOT NULL DEFAULT '',
+    dhcp_lease_expires TEXT NOT NULL DEFAULT '',
     mtu INTEGER,
     observed_at TEXT NOT NULL,
     UNIQUE(device_id, interface_key)
@@ -228,3 +231,4 @@ INSERT OR IGNORE INTO schema_migrations(version) VALUES (4);
 INSERT OR IGNORE INTO schema_migrations(version) VALUES (5);
 INSERT OR IGNORE INTO schema_migrations(version) VALUES (6);
 INSERT OR IGNORE INTO schema_migrations(version) VALUES (7);
+INSERT OR IGNORE INTO schema_migrations(version) VALUES (8);
