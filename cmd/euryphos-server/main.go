@@ -254,7 +254,35 @@ func migrate(ctx context.Context, db *sql.DB) error {
 			added_by TEXT NOT NULL DEFAULT '',
 			PRIMARY KEY(group_id, device_id)
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_group_memberships_device ON device_group_memberships(device_id)`
+		`CREATE INDEX IF NOT EXISTS idx_group_memberships_device ON device_group_memberships(device_id)`,
+		`CREATE TABLE IF NOT EXISTS device_network_interfaces (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+			interface_key TEXT NOT NULL,
+			name TEXT NOT NULL DEFAULT '',
+			mac_address TEXT NOT NULL DEFAULT '',
+			connection_type TEXT NOT NULL DEFAULT '',
+			state TEXT NOT NULL DEFAULT '',
+			addresses_json TEXT NOT NULL DEFAULT '[]',
+			mtu INTEGER,
+			observed_at TEXT NOT NULL,
+			UNIQUE(device_id, interface_key)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_network_interfaces_device ON device_network_interfaces(device_id)`,
+		`CREATE TABLE IF NOT EXISTS installed_software (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+			name TEXT NOT NULL,
+			name_normalized TEXT NOT NULL,
+			version TEXT NOT NULL DEFAULT '',
+			publisher TEXT NOT NULL DEFAULT '',
+			package_manager TEXT NOT NULL DEFAULT '',
+			first_seen_at TEXT NOT NULL,
+			last_seen_at TEXT NOT NULL,
+			UNIQUE(device_id, name_normalized, version, package_manager)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_installed_software_name_version ON installed_software(name_normalized, version)`,
+		`CREATE INDEX IF NOT EXISTS idx_installed_software_device ON installed_software(device_id)`,
 		`CREATE TABLE IF NOT EXISTS device_inventory (
 			device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
 			category TEXT NOT NULL,
@@ -310,15 +338,11 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		name string
 		definition string
 	}{
-		{name: "first_connected_at", definition: "TEXT"},
-		{name: "last_connected_at", definition: "TEXT"},
-	}
-	for _, column := range []struct {
-		name string
-		definition string
-	}{
 		{name: "database_id", definition: "INTEGER"},
 		{name: "fqdn", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "os_distribution", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "os_distribution_version", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "kernel_version", definition: "TEXT NOT NULL DEFAULT ''"},
 		{name: "os_architecture", definition: "TEXT NOT NULL DEFAULT ''"},
 		{name: "os_build", definition: "TEXT NOT NULL DEFAULT ''"},
 		{name: "os_install_date", definition: "TEXT NOT NULL DEFAULT ''"},
