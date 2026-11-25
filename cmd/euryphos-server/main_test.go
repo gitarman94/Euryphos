@@ -384,6 +384,10 @@ func TestJobClaimsRejectStaleResultsAndAcceptDuplicateTerminalResults(t *testing
 
 	startedBody := `{"claim_id":"`+claimed.Job.ClaimID+`","status":"started","result":{"message":"started"}}`
 	performRequest(t, handler, http.MethodPost, resultPath, token, startedBody, http.StatusOK)
+	duplicateStarted := performRequest(t, handler, http.MethodPost, resultPath, token, startedBody, http.StatusOK)
+	if !strings.Contains(string(duplicateStarted), `"status":"already_recorded"`) {
+		t.Fatalf("duplicate started acknowledgement was not idempotently acknowledged: %s", duplicateStarted)
+	}
 	succeededBody := `{"claim_id":"`+claimed.Job.ClaimID+`","status":"succeeded","result":{"message":"done"}}`
 	performRequest(t, handler, http.MethodPost, resultPath, token, succeededBody, http.StatusOK)
 	duplicate := performRequest(t, handler, http.MethodPost, resultPath, token, succeededBody, http.StatusOK)
