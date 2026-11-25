@@ -79,6 +79,9 @@ These decisions come from the project owner and must not be silently changed:
 - `cmd/euryphos-agent/inventory_linux.go` — Linux providers.
 - `cmd/euryphos-agent/inventory_windows.go` — Windows providers.
 - `cmd/euryphos-agent/inventory_other.go` — unsupported-platform behavior.
+- `deploy/euryphos-agent.service` — initial Linux systemd unit; currently runs as root and is not yet least-privilege.
+- `scripts/install.sh` — initial Linux source/prebuilt-binary installer with enrollment, upgrade, repair, preserving uninstall, and explicit purge.
+- `.github/workflows/release.yml` — tag-triggered Linux amd64/arm64 and Windows amd64 packages with checksums; no tagged agent release has been published.
 - Files named `*_test.go` — agent and provider tests.
 - Its only detailed Markdown handoff is `docs/PROJECT_HANDOFF.md`.
 
@@ -582,12 +585,13 @@ When continuing this work after chat history loss:
 
 ### Immediate next task
 
-1. Run the agent from the private `Euryphos-Agent` repository on one disposable Linux endpoint: enroll it against the test CT, approve the pending device in the console, confirm the heartbeat, and verify all five uploaded inventory categories, their observation times, normalized server records, and device-detail display. Then run `inventory.refresh` and one safe service-control operation; preserve logs and exact OS/commit evidence. No agent has been enrolled on the operator's CT yet.
-2. Repeat the real server-agent vertical slice on a disposable Windows VM. Test restart, network loss, stale claims, overdue review, result reporting, and revocation.
-3. Complete the remaining CT lifecycle qualification: independently verify pre/post token preservation, SQLite backup contents and restore, data-preserving uninstall/reinstall, failed-upgrade rollback, reboot persistence, and disk-full/backup-failure handling. Test purge only in a disposable CT.
-4. Implement the distinct performance telemetry collection/ingestion/storage path and only then add the Performance UI. Keep this separate from 15-minute inventory snapshots and the 30-second heartbeat.
-5. Finish reproducible agent releases/installers and decide when the currently private agent repository is ready to become public. Publish the first tagged server release only after deployment qualification.
-6. Keep patch discovery and installation deferred until real Linux/Windows collection and job lifecycle behavior is verified.
+1. On a disposable Debian 13 or Ubuntu Linux endpoint, clone the private `Euryphos-Agent` repository with an authorized GitHub account and run `sudo ./scripts/install.sh install`. Enter the test server URL and the enrollment token from the CT's root-only `/etc/euryphos/euryphos.env` directly into the hidden installer prompt; do not share the token. Approve the pending device in the console and verify heartbeat, all five inventory categories, observation times, normalized server records, and device detail. Then run `inventory.refresh` and one safe service-control action.
+2. Test the Linux agent's restart, reboot persistence, upgrade identity preservation, failed-upgrade rollback, repair, preserving uninstall, and purge only in a disposable VM. The installer is new and none of these runtime paths is yet qualified.
+3. Repeat the end-to-end server-agent workflow on a disposable Windows VM. There is no Windows installer/service integration yet; use a controlled development launch and record exact OS/commit evidence.
+4. Complete the remaining server CT lifecycle qualification: independently verify pre/post token preservation, SQLite backup contents and restore, data-preserving uninstall/reinstall, failed-upgrade rollback, reboot persistence, and disk-full/backup-failure handling. Test purge only in a disposable CT.
+5. Implement the distinct performance telemetry collection/ingestion/storage path and only then add the Performance UI. Keep this separate from 15-minute inventory snapshots and the 30-second heartbeat.
+6. Finish signed agent releases/installers and decide when the currently private agent repository is ready to become public. Publish the first tagged server release only after deployment qualification.
+7. Keep patch discovery and installation deferred until real Linux/Windows collection and job lifecycle behavior is verified.
 ---
 
 ## 13. Product completion definition
