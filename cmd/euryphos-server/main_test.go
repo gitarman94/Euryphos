@@ -178,11 +178,20 @@ func TestSQLiteServerAgentProtocol(t *testing.T) {
 	if !strings.Contains(string(devices), `"connection_state":"online"`) || !strings.Contains(string(devices), `"first_connected_at":`) || !strings.Contains(string(devices), `"last_connected_at":`) {
 		t.Fatalf("server-derived endpoint connection state is missing: %s", devices)
 	}
-	filtered := performRequest(t, handler, http.MethodGet, "/api/v1/devices?q=test&status=approved&os_family=linux&page=1&page_size=1&sort=hostname&direction=desc", "admin-test-token", "", http.StatusOK)
+	filtered := performRequest(t, handler, http.MethodGet, "/api/v1/devices?q=test&status=approved&os_family=linux&page=1&page_size=1&connection_state=online&sort=hostname&direction=desc", "admin-test-token", "", http.StatusOK)
 	if !strings.Contains(string(filtered), `"total":1`) || !strings.Contains(string(filtered), `"page_size":1`) || !strings.Contains(string(filtered), `"hostname":"test-linux"`) {
 		t.Fatalf("device search/filter/pagination failed: %s", filtered)
 	}
 	performRequest(t, handler, http.MethodGet, "/api/v1/devices?page_size=201", "admin-test-token", "", http.StatusBadRequest)
+	stale := time.Now().UTC().Add(-10 * time.Minute).Format(time.RFC3339Nano)
+	if _, err := db.ExecContext(ctx, "UPDATE devices SET last_seen = ?, last_connected_at = ? WHERE id = ?", stale, stale, enrollment.DeviceID); err != nil {
+		t.Fatalf("set stale device contact for presence filter test: %v", err)
+	}
+	offline := performRequest(t, handler, http.MethodGet, "/api/v1/devices?status=approved&connection_state=offline", "admin-test-token", "", http.StatusOK)
+	if !strings.Contains(string(offline), `"total":1`) || !strings.Contains(string(offline), `"connection_state":"offline"`) {
+		t.Fatalf("offline connection-state filter failed: %s", offline)
+	}
+	performRequest(t, handler, http.MethodGet, "/api/v1/devices?connection_state=invalid", "admin-test-token", "", http.StatusBadRequest)
 
 	// The server queues work, the agent claims it, then returns the execution result.
 	jobResponse := performRequest(t, handler, http.MethodPost, "/api/v1/jobs", "admin-test-token",
