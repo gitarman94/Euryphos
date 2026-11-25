@@ -54,7 +54,8 @@ This repository currently includes:
 - Endpoint enrollment using a shared enrollment secret and per-device bearer credentials.
 - Administrator approval and revocation endpoints.
 - Device authentication, heartbeat, and categorized inventory ingestion.
-- Administrator device listing with bounded search/filter/sort/pagination, typed device detail, inventory history, job creation, and job status retrieval.
+- Administrator device listing with bounded search/filter/sort/pagination, typed device detail, inventory history, job creation, paginated job history, and job status retrieval.
+- Device lifecycle controls in the console for pending enrollment approval and approved-device revocation; device details show duplicate candidates from either side of a match and allow a confirmed merge into an approved canonical record.
 - A SQLite `devices` row per computer with a database-generated integer `database_id` plus the stable agent-facing UUID `id`; frequently queried identity, OS, directory, hardware, CPU, memory, storage, network summary, and agent fields are stored in typed columns.
 - Normalized child rows for network interfaces and installed software; current category payloads plus change history for relevant facts. System history ignores volatile readings (uptime, free/available memory and disk space, battery charge/status); the latest device row still refreshes those values. This is not a metrics time-series store.
 - Strong duplicate candidate detection (SMBIOS UUID, or serial + manufacturer + model), reviewable candidates, explicit merge, and continued authentication using the merged endpoint's existing token.
