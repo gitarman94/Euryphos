@@ -1533,10 +1533,12 @@ func (s *Server) deviceDetail(w http.ResponseWriter, r *http.Request) {
 			write(w,http.StatusInternalServerError,response{"error":"network_interfaces_read_failed"})
 			return
 		}
+		var mtuValue any
+		if mtu.Valid { mtuValue = mtu.Int64 }
 		networkInterfaces = append(networkInterfaces,map[string]any{
 			"interface_key":key,"name":name,"mac_address":mac,"connection_type":connectionType,
 			"state":state,"addresses":json.RawMessage(addresses),"dhcp_enabled":dhcpEnabled!=0,
-			"dhcp_server":dhcpServer,"dhcp_lease_expires":leaseExpires,"mtu":mtu,
+			"dhcp_server":dhcpServer,"dhcp_lease_expires":leaseExpires,"mtu":mtuValue,
 			"observed_at":observedAt,
 		})
 	}
