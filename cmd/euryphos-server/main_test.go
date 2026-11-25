@@ -393,11 +393,18 @@ func TestDuplicateDetectionFallsBackToSerialManufacturerModel(t *testing.T) {
 	_, err = db.Exec("INSERT INTO devices(id,manufacturer,model,serial_number,smbios_uuid) VALUES(?,?,?,?,?)",
 		"placeholder-two", "OEM", "Default String", "to be filled by o.e.m.", "00000000-0000-0000-0000-000000000000")
 	if err != nil { t.Fatal(err) }
+	_, err = db.Exec("INSERT INTO devices(id,manufacturer,model,serial_number,smbios_uuid) VALUES(?,?,?,?,?)",
+		"unknown-uuid-one", "OEM A", "Model A", "", "unknown")
+	if err != nil { t.Fatal(err) }
+	_, err = db.Exec("INSERT INTO devices(id,manufacturer,model,serial_number,smbios_uuid) VALUES(?,?,?,?,?)",
+		"unknown-uuid-two", "OEM B", "Model B", "", "UNKNOWN")
+	if err != nil { t.Fatal(err) }
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil { t.Fatal(err) }
 	server := &Server{db: db}
 	if err := server.recordDuplicateCandidates(ctx, tx, "serial-duplicate"); err != nil { tx.Rollback(); t.Fatal(err) }
 	if err := server.recordDuplicateCandidates(ctx, tx, "placeholder-two"); err != nil { tx.Rollback(); t.Fatal(err) }
+	if err := server.recordDuplicateCandidates(ctx, tx, "unknown-uuid-two"); err != nil { tx.Rollback(); t.Fatal(err) }
 	if err := tx.Commit(); err != nil { t.Fatal(err) }
 	var matchedOn string
 	if err := db.QueryRow("SELECT matched_on FROM device_duplicate_candidates WHERE device_id='serial-duplicate' AND candidate_device_id='serial-canonical'").Scan(&matchedOn); err != nil {
@@ -407,6 +414,8 @@ func TestDuplicateDetectionFallsBackToSerialManufacturerModel(t *testing.T) {
 	var placeholderMatches int
 	if err := db.QueryRow("SELECT count(*) FROM device_duplicate_candidates WHERE device_id='placeholder-two'").Scan(&placeholderMatches); err != nil { t.Fatal(err) }
 	if placeholderMatches != 0 { t.Fatalf("OEM placeholder identifiers must not create duplicate candidates, got %d", placeholderMatches) }
+	if err := db.QueryRow("SELECT count(*) FROM device_duplicate_candidates WHERE device_id='unknown-uuid-two'").Scan(&placeholderMatches); err != nil { t.Fatal(err) }
+	if placeholderMatches != 0 { t.Fatalf("placeholder SMBIOS UUIDs must not create duplicate candidates, got %d", placeholderMatches) }
 }
 func TestAdminSessionAuditSuccessAndFailure(t *testing.T) {
 	db,err:=openDatabase(filepath.Join(t.TempDir(),"audit.db"))
