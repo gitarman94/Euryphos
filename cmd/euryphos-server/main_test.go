@@ -535,6 +535,21 @@ func TestBrowserSessionRequiresCSRFAndSupportsConsole(t *testing.T) {
 	if loginPage.Code != http.StatusOK || !strings.Contains(loginPage.Body.String(), "Sign in to Euryphos") {
 		t.Fatalf("login page did not render: status=%d", loginPage.Code)
 	}
+	loginScript := httptest.NewRecorder()
+	handler.ServeHTTP(loginScript, httptest.NewRequest(http.MethodGet, "/assets/login.js", nil))
+	if loginScript.Code != http.StatusOK || !strings.Contains(loginScript.Body.String(), "Authorization") {
+		t.Fatalf("login script was not served: status=%d",loginScript.Code)
+	}
+	consoleScript := httptest.NewRecorder()
+	handler.ServeHTTP(consoleScript, httptest.NewRequest(http.MethodGet, "/assets/app.js", nil))
+	if consoleScript.Code != http.StatusOK || !strings.Contains(consoleScript.Body.String(), "function devicesView") {
+		t.Fatalf("console script was not served: status=%d",consoleScript.Code)
+	}
+	consoleStyle := httptest.NewRecorder()
+	handler.ServeHTTP(consoleStyle, httptest.NewRequest(http.MethodGet, "/assets/app.css", nil))
+	if consoleStyle.Code != http.StatusOK || !strings.Contains(consoleStyle.Header().Get("Content-Type"), "text/css") {
+		t.Fatalf("console stylesheet was not served: status=%d",consoleStyle.Code)
+	}
 
 	loginRequest := httptest.NewRequest(http.MethodPost, "/api/v1/auth/session", strings.NewReader("{}"))
 	loginRequest.Header.Set("Authorization", "Bearer admin-test-token")
