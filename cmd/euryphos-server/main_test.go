@@ -728,7 +728,7 @@ func TestNetworkInventoryNormalizesDHCPAndDeviceDetailReturnsIt(t *testing.T) {
 		"default_gateway":"192.168.50.1",
 		"dns_servers":["192.168.50.1","1.1.1.1"],
 		"interfaces":[{"name":"Ethernet","index":12,"mac_address":"00-11-22-33-44-55","connection_type":"ethernet","status":"up","addresses":["192.168.50.22/24"]}],
-		"dhcp_interfaces":[{"name":"Ethernet","interface_index":12,"dhcp_enabled":true,"dhcp_server":"192.168.50.1","dhcp_lease_expires":"2026-11-25T12:00:00Z"}]
+		"dhcp_interfaces":[{"name":"Ethernet","interface_index":12,"dhcp_enabled":true,"dhcp_server":"192.168.50.1","dhcp_lease_expires":"2026-11-25T12:00:00Z",`"dhcp_lease_expiry_estimated":true`,"dhcp_lease_expiry_estimated":true}]
 	}`)
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil { t.Fatal(err) }
@@ -738,14 +738,14 @@ func TestNetworkInventoryNormalizesDHCPAndDeviceDetailReturnsIt(t *testing.T) {
 		t.Fatalf("apply network inventory: %v",err)
 	}
 	if err := tx.Commit(); err != nil { t.Fatal(err) }
-	var dhcpEnabled int
+	var dhcpEnabled, leaseEstimated int
 	var dhcpServer, lease, gateway, dns string
-	if err := db.QueryRow(`SELECT n.dhcp_enabled,n.dhcp_server,n.dhcp_lease_expires,d.default_gateway,d.dns_servers_json
+	if err := db.QueryRow(`SELECT n.dhcp_enabled,n.dhcp_server,n.dhcp_lease_expires,n.dhcp_lease_expiry_estimated,d.default_gateway,d.dns_servers_json
 		FROM device_network_interfaces n JOIN devices d ON d.id=n.device_id WHERE n.device_id='dhcp-device'`).
-		Scan(&dhcpEnabled,&dhcpServer,&lease,&gateway,&dns); err != nil {
+		Scan(&dhcpEnabled,&dhcpServer,&lease,&leaseEstimated,&gateway,&dns); err != nil {
 		t.Fatal(err)
 	}
-	if dhcpEnabled != 1 || dhcpServer != "192.168.50.1" || lease != "2026-11-25T12:00:00Z" ||
+	if dhcpEnabled != 1 || leaseEstimated != 1 || dhcpServer != "192.168.50.1" || lease != "2026-11-25T12:00:00Z" ||
 		gateway != "192.168.50.1" || !strings.Contains(dns,"1.1.1.1") {
 		t.Fatalf("normalized network data mismatch: dhcp=%d server=%q lease=%q gateway=%q dns=%q",
 			dhcpEnabled,dhcpServer,lease,gateway,dns)
@@ -790,7 +790,7 @@ func TestMigrationAddsDHCPColumnsToExistingNetworkTable(t *testing.T) {
 		if err:=rows.Scan(&cid,&name,&dataType,&notNull,&defaultValue,&primaryKey);err!=nil { t.Fatal(err) }
 		columns[name]=true
 	}
-	for _,name:=range []string{"dhcp_enabled","dhcp_server","dhcp_lease_expires"} {
+	for _,name:=range []string{"dhcp_enabled","dhcp_server","dhcp_lease_expires","dhcp_lease_expiry_estimated"} {
 		if !columns[name] { t.Fatalf("migration did not add %s: %#v",name,columns) }
 	}
 }
