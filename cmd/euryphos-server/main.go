@@ -659,6 +659,26 @@ func (s *Server) inventory(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusInternalServerError, response{"error": "inventory_current_write_failed"})
 		return
 	}
+	deviceID := r.PathValue("id")
+	var normalizeErr error
+	switch in.Category {
+	case "system":
+		normalizeErr = s.applySystemInventory(r.Context(), tx, deviceID, in.Payload, observedAt)
+	case "network":
+		normalizeErr = s.applyNetworkInventory(r.Context(), tx, deviceID, in.Payload, observedAt)
+	case "software":
+		normalizeErr = s.applySoftwareInventory(r.Context(), tx, deviceID, in.Payload, observedAt)
+	}
+	if normalizeErr != nil {
+		write(w, http.StatusInternalServerError, response{"error": "inventory_normalization_failed"})
+		return
+	}
+	if in.Category == "system" || in.Category == "network" {
+		if err := s.refreshDynamicMemberships(r.Context(), tx, deviceID); err != nil {
+			write(w, http.StatusInternalServerError, response{"error": "group_membership_refresh_failed"})
+			return
+		}
+	}
 	receivedAt := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := tx.ExecContext(r.Context(), `UPDATE devices
 		SET last_seen = ?,
@@ -1081,56 +1101,63 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// deviceDetail returns the endpoint's current identity and the latest payload for
-// every inventory category. It deliberately omits the device credential hash.
+// deviceDetail returns typed device columns and the current categorized inventory.
+// The internal API key hashes are never exposed.
 func (s *Server) deviceDetail(w http.ResponseWriter, r *http.Request) {
-	var id, hostname, osFamily, osVersion, status, createdAt string
-	var lastSeen, firstConnected, lastConnected sql.NullString
-	if err := s.db.QueryRowContext(r.Context(), `SELECT id, hostname, os_family, os_version,
-		status, last_seen, first_connected_at, last_connected_at, created_at
-		FROM devices WHERE id = ?`, r.PathValue("id")).
-		Scan(&id, &hostname, &osFamily, &osVersion, &status, &lastSeen, &firstConnected, &lastConnected, &createdAt); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			write(w, http.StatusNotFound, response{"error": "device_not_found"})
-			return
-		}
+	rows, err := s.db.QueryContext(r.Context(), "SELECT * FROM devices WHERE id = ?", r.PathValue("id"))
+	if err != nil {
 		write(w, http.StatusInternalServerError, response{"error": "database_error"})
 		return
 	}
-
-	rows, err := s.db.QueryContext(r.Context(), `SELECT category, payload, observed_at, received_at
-		FROM device_inventory WHERE device_id = ? ORDER BY category`, id)
-	if err != nil {
-		write(w, http.StatusInternalServerError, response{"error": "inventory_read_failed"})
+	columns, err := rows.Columns()
+	if err != nil { rows.Close(); write(w,http.StatusInternalServerError,response{"error":"database_error"}); return }
+	if !rows.Next() {
+		rows.Close()
+		write(w, http.StatusNotFound, response{"error": "device_not_found"})
 		return
 	}
-	defer rows.Close()
-	inventory := []map[string]any{}
-	for rows.Next() {
-		var category, observedAt, receivedAt string
-		var payload []byte
-		if err := rows.Scan(&category, &payload, &observedAt, &receivedAt); err != nil {
-			write(w, http.StatusInternalServerError, response{"error": "inventory_read_failed"})
-			return
+	raw := make([]any,len(columns))
+	scan := make([]any,len(columns))
+	for i := range raw { scan[i]=&raw[i] }
+	if err := rows.Scan(scan...); err != nil {
+		rows.Close()
+		write(w,http.StatusInternalServerError,response{"error":"database_error"})
+		return
+	}
+	if err := rows.Close(); err != nil { write(w,http.StatusInternalServerError,response{"error":"database_error"}); return }
+	device := map[string]any{}
+	lastSeen := sql.NullString{}
+	for i,name := range columns {
+		if name=="token_hash" { continue }
+		value := raw[i]
+		switch typed := value.(type) {
+		case []byte:
+			value = string(typed)
 		}
-		inventory = append(inventory, map[string]any{
-			"category": category, "payload": json.RawMessage(payload),
-			"observed_at": observedAt, "received_at": receivedAt,
+		if name=="last_seen" {
+			if value!=nil { lastSeen=sql.NullString{String:fmt.Sprint(value),Valid:true} }
+		}
+		device[name]=value
+	}
+	device["connection_state"]=s.connectionState(lastSeen)
+	inventoryRows, err := s.db.QueryContext(r.Context(), `SELECT category,payload,observed_at,received_at
+		FROM device_inventory WHERE device_id=? ORDER BY category`,r.PathValue("id"))
+	if err != nil { write(w,http.StatusInternalServerError,response{"error":"inventory_read_failed"}); return }
+	defer inventoryRows.Close()
+	inventory := []map[string]any{}
+	for inventoryRows.Next() {
+		var category,observedAt,receivedAt string
+		var payload []byte
+		if err:=inventoryRows.Scan(&category,&payload,&observedAt,&receivedAt);err!=nil {
+			write(w,http.StatusInternalServerError,response{"error":"inventory_read_failed"});return
+		}
+		inventory=append(inventory,map[string]any{
+			"category":category,"payload":json.RawMessage(payload),
+			"observed_at":observedAt,"received_at":receivedAt,
 		})
 	}
-	if err := rows.Err(); err != nil {
-		write(w, http.StatusInternalServerError, response{"error": "inventory_read_failed"})
-		return
-	}
-	write(w, http.StatusOK, response{
-		"device": map[string]any{
-			"id": id, "hostname": hostname, "os_family": osFamily, "os_version": osVersion,
-			"status": status, "last_seen": lastSeen.String, "created_at": createdAt,
-			"first_connected_at": firstConnected.String, "last_connected_at": lastConnected.String,
-			"connection_state": s.connectionState(lastSeen),
-		},
-		"inventory": inventory,
-	})
+	if err:=inventoryRows.Err();err!=nil { write(w,http.StatusInternalServerError,response{"error":"inventory_read_failed"});return }
+	write(w, http.StatusOK, response{"device":device,"inventory":inventory})
 }
 
 // inventoryHistory returns append-only inventory observations. The cursor is the
