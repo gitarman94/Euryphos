@@ -48,6 +48,20 @@ func TestSystemInventoryPreservesLargeIntegerFacts(t *testing.T) {
 	}
 }
 
+func TestInventoryHistoryFingerprintIgnoresLiveMetrics(t *testing.T) {
+	before := []byte(`{"hostname":"host-1","uptime_seconds":1000,"last_boot":"2026-11-25T01:00:00Z","hardware":{"serial_number":"S-1"},"memory":{"total_bytes":17179869184,"available_bytes":8000000000,"used_bytes":9000000000},"root_filesystem":{"total_bytes":1000000000000,"free_bytes":500000000000,"available_bytes":450000000000},"batteries":[{"status":"Discharging","capacity_percent":80,"health_percent":95}]}`)
+	after := []byte(`{"hostname":"host-1","uptime_seconds":1900,"last_boot":"2026-11-25T01:00:01Z","hardware":{"serial_number":"S-1"},"memory":{"total_bytes":17179869184,"available_bytes":7000000000,"used_bytes":10000000000},"root_filesystem":{"total_bytes":1000000000000,"free_bytes":490000000000,"available_bytes":440000000000},"batteries":[{"status":"Charging","capacity_percent":82,"health_percent":95}]}`)
+	if !bytes.Equal(inventoryHistoryFingerprint("system", before), inventoryHistoryFingerprint("system", after)) {
+		t.Fatal("live uptime, capacity, and charge changes should not create inventory history snapshots")
+	}
+	identityChange := []byte(`{"hostname":"host-1","hardware":{"serial_number":"S-2"}}`)
+	if bytes.Equal(inventoryHistoryFingerprint("system", before), inventoryHistoryFingerprint("system", identityChange)) {
+		t.Fatal("identity changes must create inventory history snapshots")
+	}
+	if !bytes.Equal(inventoryHistoryFingerprint("network", before), inventoryHistoryFingerprint("network", after)) {
+		t.Fatal("non-system category payloads should use exact change detection")
+	}
+}
 func TestConnectionState(t *testing.T) {
 	s := &Server{onlineGrace: time.Minute}
 	if got := s.connectionState(sql.NullString{}); got != "never_connected" {
