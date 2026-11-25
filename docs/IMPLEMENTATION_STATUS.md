@@ -17,7 +17,7 @@
 
 - The server repository has no Linux server installer or Windows server installer. Client installers belong in the separate Euryphos-Agent repository and are not yet included there. The old prototype scripts target Rust/Python and are not valid for the current Go implementation.
 - Formal OS support is not yet certified. Arch, Debian, Fedora, and listed derivatives are planned targets, not current compatibility claims.
-- The agent has basic host and installed-software inventory, but distribution identification, Arch/pacman collection, Debian/apt nuances, Fedora/dnf support, and Bazzite/image-aware update management remain incomplete.
+- The agent now has an initial Linux inventory provider for DMI identity, CPU/RAM, uptime/boot time, root filesystem, batteries where exposed, network interfaces, DNS/default gateway, and DPKG/RPM/pacman software inventory. Distribution-aware compatibility, Debian/apt detail, Fedora/dnf/dnf5 integration, Bazzite/rpm-ostree support, and all platform validation remain incomplete; no Linux distribution is certified.
 - Most privileged job executors are not implemented. Patch installation, software deployment/removal, configuration enforcement, service control, reboot/shutdown, and agent self-update remain incomplete.
 - No native macOS client exists yet; it is explicitly in the roadmap.
 - **Web UI:** no browser-based dashboard, Devices list, or per-device details page exists yet. No frontend assets/templates, browser authentication/session flow, or working navigation is present.
