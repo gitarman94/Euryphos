@@ -228,6 +228,92 @@ func TestSQLiteServerAgentProtocol(t *testing.T) {
 	}
 }
 
+func TestGroupsUseDirectoryAndLinuxCompatibleAttributes(t *testing.T) {
+	db, err := openDatabase(filepath.Join(t.TempDir(), "groups.db"))
+	if err != nil { t.Fatal(err) }
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := migrate(ctx, db); err != nil { t.Fatal(err) }
+	_, err = db.Exec("INSERT INTO devices(id,hostname,os_family,os_version,os_distribution,directory_type,directory_domain,organizational_unit) VALUES(?,?,?,?,?,?,?,?)",
+		"group-device","linux-workstation","linux","Debian 13","debian","active_directory","corp.example","Engineering/Linux")
+	if err != nil { t.Fatal(err) }
+	server := &Server{db:db,adminToken:"admin-test-token",onlineGrace:time.Minute}
+	handler := securityHeaders(routes(server))
+	raw := performRequest(t,handler,http.MethodPost,"/api/v1/groups","admin-test-token",
+		"{\"name\":\"Linux Directory Fleet\",\"group_type\":\"dynamic\",\"match_operator\":\"all\",\"rules\":[{\"field\":\"os_family\",\"operator\":\"eq\",\"value\":\"linux\"},{\"field\":\"directory_domain\",\"operator\":\"eq\",\"value\":\"corp.example\"},{\"field\":\"organizational_unit\",\"operator\":\"contains\",\"value\":\"Engineering\"}]}",
+		http.StatusCreated)
+	var group map[string]any
+	if err:=json.Unmarshal(raw,&group);err!=nil { t.Fatal(err) }
+	id:=int64(group["id"].(float64))
+	members:=performRequest(t,handler,http.MethodGet,"/api/v1/groups/"+strconv.FormatInt(id,10)+"/members","admin-test-token","",http.StatusOK)
+	if !strings.Contains(string(members),"group-device") {
+		t.Fatalf("dynamic group did not evaluate cross-platform attributes: %s",members)
+	}
+	performRequest(t,handler,http.MethodPost,"/api/v1/groups","admin-test-token",
+		"{\"name\":\"Bad Rule\",\"group_type\":\"dynamic\",\"rules\":[{\"field\":\"token_hash\",\"operator\":\"eq\",\"value\":\"secret\"}]}",
+		http.StatusBadRequest)
+	var auditCount int
+	if err:=db.QueryRow("SELECT count(*) FROM audit_log WHERE event_type='group.created'").Scan(&auditCount);err!=nil || auditCount!=1 {
+		t.Fatalf("group creation audit missing: count=%d error=%v",auditCount,err)
+	}
+}
+
+func TestDuplicateMergePreservesAgentCredential(t *testing.T) {
+	db, err := openDatabase(filepath.Join(t.TempDir(), "merge.db"))
+	if err != nil { t.Fatal(err) }
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err:=migrate(ctx,db);err!=nil { t.Fatal(err) }
+	canonical, source := "canonical-device", "duplicate-device"
+	_,err=db.Exec("INSERT INTO devices(id,hostname,manufacturer,model,serial_number,smbios_uuid,status,token_hash) VALUES(?,?,?,?,?,?,?,?)",
+		canonical,"workstation-a","Contoso","Model X","SERIAL-77","11111111-2222-3333-4444-555555555555","approved",hash("canonical-token"))
+	if err!=nil { t.Fatal(err) }
+	_,err=db.Exec("INSERT INTO devices(id,hostname,manufacturer,model,serial_number,smbios_uuid,status,token_hash) VALUES(?,?,?,?,?,?,?,?)",
+		source,"workstation-b","Contoso","Model X","SERIAL-77","11111111-2222-3333-4444-555555555555","approved",hash("source-token"))
+	if err!=nil { t.Fatal(err) }
+	tx,err:=db.BeginTx(ctx,nil)
+	if err!=nil { t.Fatal(err) }
+	if err:=(&Server{db:db}).recordDuplicateCandidates(ctx,tx,source);err!=nil { tx.Rollback();t.Fatal(err) }
+	if err:=tx.Commit();err!=nil { t.Fatal(err) }
+	server:=&Server{db:db,adminToken:"admin-test-token",onlineGrace:time.Minute}
+	handler:=securityHeaders(routes(server))
+	candidates:=performRequest(t,handler,http.MethodGet,"/api/v1/devices/"+source+"/duplicates","admin-test-token","",http.StatusOK)
+	if !strings.Contains(string(candidates),canonical) { t.Fatalf("duplicate candidate not returned: %s",candidates) }
+	performRequest(t,handler,http.MethodPost,"/api/v1/devices/"+source+"/merge","admin-test-token",
+		"{\"canonical_device_id\":\""+canonical+"\"}",http.StatusOK)
+	performRequest(t,handler,http.MethodPost,"/api/v1/devices/"+source+"/heartbeat","source-token",
+		"{\"hostname\":\"merged-host\",\"os_family\":\"linux\"}",http.StatusOK)
+	var hostname,status,mergedInto string
+	if err:=db.QueryRow("SELECT hostname,status,COALESCE(merged_into,'') FROM devices WHERE id=?",canonical).Scan(&hostname,&status,&mergedInto);err!=nil {
+		t.Fatal(err)
+	}
+	if hostname!="merged-host" || status!="approved" || mergedInto!="" {
+		t.Fatalf("old credential did not route to canonical device: hostname=%q status=%q merged_into=%q",hostname,status,mergedInto)
+	}
+	if err:=db.QueryRow("SELECT status,merged_into FROM devices WHERE id=?",source).Scan(&status,&mergedInto);err!=nil {
+		t.Fatal(err)
+	}
+	if status!="merged" || mergedInto!=canonical { t.Fatalf("source alias not retained: status=%q merged_into=%q",status,mergedInto) }
+}
+
+func TestAdminSessionAuditSuccessAndFailure(t *testing.T) {
+	db,err:=openDatabase(filepath.Join(t.TempDir(),"audit.db"))
+	if err!=nil { t.Fatal(err) }
+	defer db.Close()
+	ctx,cancel:=context.WithTimeout(context.Background(),10*time.Second)
+	defer cancel()
+	if err:=migrate(ctx,db);err!=nil { t.Fatal(err) }
+	handler:=securityHeaders(routes(&Server{db:db,adminToken:"admin-test-token"}))
+	performRequest(t,handler,http.MethodPost,"/api/v1/auth/session","bad-token","{}",http.StatusUnauthorized)
+	performRequest(t,handler,http.MethodPost,"/api/v1/auth/session","admin-test-token","{}",http.StatusOK)
+	var failures,successes int
+	if err:=db.QueryRow("SELECT count(*) FROM audit_log WHERE event_type='auth.admin.failure'").Scan(&failures);err!=nil { t.Fatal(err) }
+	if err:=db.QueryRow("SELECT count(*) FROM audit_log WHERE event_type='auth.admin.success'").Scan(&successes);err!=nil { t.Fatal(err) }
+	if failures!=1 || successes!=1 { t.Fatalf("unexpected auth audit rows: failures=%d successes=%d",failures,successes) }
+}
+
 func performRequest(t *testing.T, handler http.Handler, method, path, token, body string, expectedStatus int) []byte {
 	t.Helper()
 	var requestBody *bytes.Reader
