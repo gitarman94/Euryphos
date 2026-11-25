@@ -48,3 +48,8 @@
 - The current standalone endpoint repository is `https://github.com/gitarman94/Euryphos-Agent`. It contains the independently maintained Go agent and has no server or SQLite runtime dependency.
 - The former `CommandPilot-Agent` project is historical. Its source, dependencies, installer scripts, commit history, copyright notices, and prior GPL-3.0 grant require file-level provenance review before reuse or relicensing.
 - The current agent repository is not yet production-installable. Its Linux/Windows installers, signed versioned releases, and end-to-end validation against the live Euryphos server remain outstanding. See `docs/REPOSITORY_LAYOUT.md`.
+
+
+## Device management UI and complete inventory requirements
+
+Device list and full device-detail requirements are specified in `docs/DEVICE_MANAGEMENT_UI_SPEC.md`. The current repository still has no browser UI or device detail API. The endpoint telemetry requirements, including client-local GPS opt-in with a default-off hard disable, are specified in the Euryphos-Agent repository. These are requirements only; no listed field or UI page should be considered implemented until source code, persistence, and end-to-end tests demonstrate it.
