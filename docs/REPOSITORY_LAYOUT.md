@@ -1,6 +1,6 @@
 # Euryphos repository layout and separate agent distribution
 
-**Status:** Local source split prepared; GitHub repository publication and end-to-end compatibility remain outstanding.
+**Status:** The server and standalone agent repositories exist on GitHub and are source-separated. End-to-end protocol compatibility and release validation remain outstanding.
 
 ## Repository ownership
 
@@ -24,9 +24,9 @@ The server archive contains only server code. The separate agent archive contain
 
 ## Historical standalone client repository
 
-The previous repository was `https://github.com/gitarman94/CommandPilot-Agent`. It is the historical client-only project and should be treated as a migration source, not as a validated Euryphos client. Its former product identifiers, protocol, installer scripts, dependencies, notices, and release artifacts require a full audit before reuse.
+The former `CommandPilot-Agent` project is historical. The current standalone endpoint project is `https://github.com/gitarman94/Euryphos-Agent`. Do not treat legacy installers, dependencies, release assets, or old protocol behavior as compatible until they have been audited and migrated.
 
-A prior copy of its README indicated a GPL-3.0 license. Preserve all original license and copyright notices if source is imported from that repository. This standalone agent archive is built from the agent entry point in the Euryphos development tree; it does not silently import old installer scripts or claim those scripts have been migrated.
+A prior copy of the historical agent README indicated GPL-3.0. Preserve all original notices and previously granted GPL-3.0 rights for any code that is derived from or was distributed under that license. The Euryphos Personal Use License does not revoke or narrow prior grants. Audit source provenance before assuming the personal/commercial policy applies to every agent file.
 
 ## Current split deliverables
 
@@ -59,7 +59,7 @@ Before publishing supported endpoint releases:
 - [ ] Implement native Windows service install, repair, upgrade, uninstall, and rollback behavior.
 - [ ] Add macOS later: launchd, signed/notarized PKG, Keychain, Intel/Apple Silicon builds, MDM deployment, and Apple-native inventory/update providers.
 - [ ] Publish versioned releases and installation instructions only after end-to-end validation.
-- [ ] Rename the historical GitHub repository to `Euryphos-Agent` after its source and history have been audited and the migration plan approved.
+- [x] Create the separately maintained `Euryphos-Agent` GitHub repository. The legacy source/history and license audit remains open.
 
 ## Important installer constraint
 
