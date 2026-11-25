@@ -1259,6 +1259,320 @@ func (s *Server) inventoryHistory(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) auditList(w http.ResponseWriter, r *http.Request) {
+	limit := 100
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1 || value > 500 {
+			write(w, http.StatusBadRequest, response{"error":"invalid_limit","max":500})
+			return
+		}
+		limit = value
+	}
+	query := `SELECT id,occurred_at,actor_type,actor_id,event_type,outcome,target_type,target_id,
+		source_ip,user_agent,details_json FROM audit_log WHERE 1=1`
+	args := []any{}
+	for _, filter := range []struct{ key,column string; max int }{
+		{"event_type","event_type",100},{"actor_type","actor_type",40},
+		{"target_type","target_type",40},{"target_id","target_id",200},{"outcome","outcome",40},
+	} {
+		value := strings.TrimSpace(r.URL.Query().Get(filter.key))
+		if len(value)>filter.max {
+			write(w,http.StatusBadRequest,response{"error":"invalid_"+filter.key+"_filter"})
+			return
+		}
+		if value!="" { query+=" AND "+filter.column+"=?"; args=append(args,value) }
+	}
+	query += " ORDER BY id DESC LIMIT ?"
+	args=append(args,limit)
+	rows,err:=s.db.QueryContext(r.Context(),query,args...)
+	if err!=nil { write(w,http.StatusInternalServerError,response{"error":"audit_read_failed"});return }
+	defer rows.Close()
+	items:=[]map[string]any{}
+	for rows.Next() {
+		var id int64
+		var occurredAt,actorType,actorID,eventType,outcome,targetType,targetID,sourceIP,userAgent,details string
+		if err:=rows.Scan(&id,&occurredAt,&actorType,&actorID,&eventType,&outcome,&targetType,&targetID,&sourceIP,&userAgent,&details);err!=nil {
+			write(w,http.StatusInternalServerError,response{"error":"audit_read_failed"});return
+		}
+		items=append(items,map[string]any{"id":id,"occurred_at":occurredAt,"actor_type":actorType,
+			"actor_id":actorID,"event_type":eventType,"outcome":outcome,"target_type":targetType,
+			"target_id":targetID,"source_ip":sourceIP,"user_agent":userAgent,"details":json.RawMessage(details)})
+	}
+	if err:=rows.Err();err!=nil { write(w,http.StatusInternalServerError,response{"error":"audit_read_failed"});return }
+	write(w,http.StatusOK,response{"items":items,"count":len(items)})
+}
+
+func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {
+	rows,err:=s.db.QueryContext(r.Context(),`SELECT g.id,g.name,g.description,g.group_type,g.match_operator,g.rules_json,
+		g.created_at,g.updated_at,count(m.device_id)
+		FROM machine_groups g LEFT JOIN device_group_memberships m ON m.group_id=g.id
+		GROUP BY g.id ORDER BY g.name COLLATE NOCASE`)
+	if err!=nil { write(w,http.StatusInternalServerError,response{"error":"group_read_failed"});return }
+	defer rows.Close()
+	items:=[]map[string]any{}
+	for rows.Next() {
+		var id,count int64
+		var name,description,kind,operator,rules,createdAt,updatedAt string
+		if err:=rows.Scan(&id,&name,&description,&kind,&operator,&rules,&createdAt,&updatedAt,&count);err!=nil {
+			write(w,http.StatusInternalServerError,response{"error":"group_read_failed"});return
+		}
+		items=append(items,map[string]any{"id":id,"name":name,"description":description,"group_type":kind,
+			"match_operator":operator,"rules":json.RawMessage(rules),"member_count":count,
+			"created_at":createdAt,"updated_at":updatedAt})
+	}
+	if err:=rows.Err();err!=nil { write(w,http.StatusInternalServerError,response{"error":"group_read_failed"});return }
+	write(w,http.StatusOK,response{"items":items,"count":len(items)})
+}
+
+func (s *Server) createGroup(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Name string `json:"name"`
+		Description string `json:"description"`
+		Type string `json:"group_type"`
+		Operator string `json:"match_operator"`
+		Rules []groupRule `json:"rules"`
+	}
+	if !decode(w,r,&in) { return }
+	in.Name=strings.TrimSpace(in.Name)
+	in.Description=strings.TrimSpace(in.Description)
+	if in.Name=="" || len(in.Name)>100 || len(in.Description)>500 ||
+		(in.Type!="static" && in.Type!="dynamic") {
+		write(w,http.StatusBadRequest,response{"error":"invalid_group"})
+		return
+	}
+	if in.Operator=="" { in.Operator="all" }
+	if in.Operator!="all" && in.Operator!="any" {
+		write(w,http.StatusBadRequest,response{"error":"invalid_match_operator"})
+		return
+	}
+	if in.Type=="dynamic" && !validGroupRules(in.Rules) {
+		write(w,http.StatusBadRequest,response{"error":"invalid_group_rules","allowed_fields":sortedGroupFields()})
+		return
+	}
+	if in.Type=="static" && len(in.Rules)>0 {
+		write(w,http.StatusBadRequest,response{"error":"static_group_cannot_have_rules"})
+		return
+	}
+	rules,_:=json.Marshal(in.Rules)
+	tx,err:=s.db.BeginTx(r.Context(),nil)
+	if err!=nil { write(w,http.StatusInternalServerError,response{"error":"database_error"});return }
+	defer tx.Rollback()
+	result,err:=tx.ExecContext(r.Context(),`INSERT INTO machine_groups(name,description,group_type,match_operator,rules_json)
+		VALUES (?,?,?,?,?)`,in.Name,in.Description,in.Type,in.Operator,string(rules))
+	if err!=nil { write(w,http.StatusConflict,response{"error":"group_name_conflict_or_create_failed"});return }
+	id,err:=result.LastInsertId()
+	if err!=nil { write(w,http.StatusInternalServerError,response{"error":"group_create_failed"});return }
+	if in.Type=="dynamic" {
+		rows,err:=tx.QueryContext(r.Context(),"SELECT id FROM devices WHERE merged_into IS NULL")
+		if err!=nil { write(w,http.StatusInternalServerError,response{"error":"group_member_refresh_failed"});return }
+		deviceIDs:=[]string{}
+		for rows.Next() { var deviceID string; if err:=rows.Scan(&deviceID);err!=nil { rows.Close();write(w,http.StatusInternalServerError,response{"error":"group_member_refresh_failed"});return };deviceIDs=append(deviceIDs,deviceID) }
+		if err:=rows.Err();err!=nil { rows.Close();write(w,http.StatusInternalServerError,response{"error":"group_member_refresh_failed"});return }
+		rows.Close()
+		for _,deviceID:=range deviceIDs { if err:=s.refreshDynamicMemberships(r.Context(),tx,deviceID);err!=nil { write(w,http.StatusInternalServerError,response{"error":"group_member_refresh_failed"});return } }
+	}
+	if err:=auditEvent(r.Context(),tx,r,"admin","configured-admin","group.created","success","group",strconv.FormatInt(id,10),map[string]any{"name":in.Name,"group_type":in.Type,"rules":in.Rules});err!=nil {
+		write(w,http.StatusInternalServerError,response{"error":"audit_write_failed"});return
+	}
+	if err:=tx.Commit();err!=nil { write(w,http.StatusInternalServerError,response{"error":"group_commit_failed"});return }
+	write(w,http.StatusCreated,response{"id":id,"name":in.Name,"group_type":in.Type})
+}
+
+func sortedGroupFields() []string {
+	fields:=make([]string,0,len(groupFields))
+	for field:=range groupFields { fields=append(fields,field) }
+	sort.Strings(fields)
+	return fields
+}
+
+func groupID(r *http.Request) (int64,error) {
+	id,err:=strconv.ParseInt(r.PathValue("id"),10,64)
+	if err!=nil || id<1 { return 0,errors.New("invalid group id") }
+	return id,nil
+}
+
+func (s *Server) groupMembers(w http.ResponseWriter, r *http.Request) {
+	id,err:=groupID(r)
+	if err!=nil { write(w,http.StatusBadRequest,response{"error":"invalid_group_id"});return }
+	rows,err:=s.db.QueryContext(r.Context(),`SELECT d.database_id,d.id,d.hostname,d.os_family,d.os_version,d.os_distribution,
+		d.directory_domain,d.organizational_unit,d.status
+		FROM device_group_memberships m JOIN devices d ON d.id=m.device_id
+		WHERE m.group_id=? AND d.merged_into IS NULL ORDER BY d.hostname COLLATE NOCASE`,id)
+	if err!=nil { write(w,http.StatusInternalServerError,response{"error":"group_members_read_failed"});return }
+	defer rows.Close()
+	items:=[]map[string]any{}
+	for rows.Next() {
+		var databaseID sql.NullInt64
+		var deviceID,hostname,osFamily,osVersion,distribution,domain,ou,status string
+		if err:=rows.Scan(&databaseID,&deviceID,&hostname,&osFamily,&osVersion,&distribution,&domain,&ou,&status);err!=nil {
+			write(w,http.StatusInternalServerError,response{"error":"group_members_read_failed"});return
+		}
+		items=append(items,map[string]any{"database_id":databaseID.Int64,"id":deviceID,"hostname":hostname,
+			"os_family":osFamily,"os_version":osVersion,"os_distribution":distribution,
+			"directory_domain":domain,"organizational_unit":ou,"status":status})
+	}
+	if err:=rows.Err();err!=nil { write(w,http.StatusInternalServerError,response{"error":"group_members_read_failed"});return }
+	write(w,http.StatusOK,response{"items":items,"count":len(items)})
+}
+
+func (s *Server) addGroupMembers(w http.ResponseWriter, r *http.Request) {
+	id,err:=groupID(r)
+	if err!=nil { write(w,http.StatusBadRequest,response{"error":"invalid_group_id"});return }
+	var kind string
+	if err:=s.db.QueryRowContext(r.Context(),"SELECT group_type FROM machine_groups WHERE id=?",id).Scan(&kind);err!=nil {
+		write(w,http.StatusNotFound,response{"error":"group_not_found"});return
+	}
+	if kind!="static" { write(w,http.StatusBadRequest,response{"error":"dynamic_group_members_are_rule_managed"});return }
+	var in struct { DeviceIDs []string `json:"device_ids"` }
+	if !decode(w,r,&in) { return }
+	if len(in.DeviceIDs)==0 || len(in.DeviceIDs)>1000 {
+		write(w,http.StatusBadRequest,response{"error":"invalid_device_ids","max":1000});return
+	}
+	tx,err:=s.db.BeginTx(r.Context(),nil)
+	if err!=nil { write(w,http.StatusInternalServerError,response{"error":"database_error"});return }
+	defer tx.Rollback()
+	added:=0
+	for _,deviceID:=range in.DeviceIDs {
+		result,err:=tx.ExecContext(r.Context(),`INSERT OR IGNORE INTO device_group_memberships(group_id,device_id,added_by)
+			SELECT ?,id,'configured-admin' FROM devices WHERE id=? AND merged_into IS NULL`,id,deviceID)
+		if err!=nil { write(w,http.StatusInternalServerError,response{"error":"group_membership_write_failed"});return }
+		count,_:=result.RowsAffected();added+=int(count)
+	}
+	if err:=auditEvent(r.Context(),tx,r,"admin","configured-admin","group.members.added","success","group",strconv.FormatInt(id,10),map[string]any{"requested":len(in.DeviceIDs),"added":added});err!=nil {
+		write(w,http.StatusInternalServerError,response{"error":"audit_write_failed"});return
+	}
+	if err:=tx.Commit();err!=nil { write(w,http.StatusInternalServerError,response{"error":"group_membership_commit_failed"});return }
+	write(w,http.StatusOK,response{"added":added})
+}
+
+func (s *Server) removeGroupMember(w http.ResponseWriter, r *http.Request) {
+	id,err:=groupID(r)
+	if err!=nil { write(w,http.StatusBadRequest,response{"error":"invalid_group_id"});return }
+	deviceID:=r.PathValue("deviceID")
+	var kind string
+	if err:=s.db.QueryRowContext(r.Context(),"SELECT group_type FROM machine_groups WHERE id=?",id).Scan(&kind);err!=nil {
+		write(w,http.StatusNotFound,response{"error":"group_not_found"});return
+	}
+	if kind!="static" { write(w,http.StatusBadRequest,response{"error":"dynamic_group_members_are_rule_managed"});return }
+	tx,err:=s.db.BeginTx(r.Context(),nil)
+	if err!=nil { write(w,http.StatusInternalServerError,response{"error":"database_error"});return }
+	defer tx.Rollback()
+	result,err:=tx.ExecContext(r.Context(),"DELETE FROM device_group_memberships WHERE group_id=? AND device_id=?",id,deviceID)
+	if err!=nil { write(w,http.StatusInternalServerError,response{"error":"group_membership_write_failed"});return }
+	count,_:=result.RowsAffected()
+	if err:=auditEvent(r.Context(),tx,r,"admin","configured-admin","group.member.removed","success","device",deviceID,map[string]any{"group_id":id});err!=nil {
+		write(w,http.StatusInternalServerError,response{"error":"audit_write_failed"});return
+	}
+	if err:=tx.Commit();err!=nil { write(w,http.StatusInternalServerError,response{"error":"group_membership_commit_failed"});return }
+	write(w,http.StatusOK,response{"removed":count>0})
+}
+
+func (s *Server) deviceDuplicates(w http.ResponseWriter, r *http.Request) {
+	deviceID:=r.PathValue("id")
+	rows,err:=s.db.QueryContext(r.Context(),`SELECT c.id,c.matched_on,c.confidence,c.status,c.candidate_device_id,
+		d.database_id,d.hostname,d.serial_number,d.smbios_uuid
+		FROM device_duplicate_candidates c JOIN devices d ON d.id=c.candidate_device_id
+		WHERE c.device_id=? ORDER BY c.id DESC`,deviceID)
+	if err!=nil { write(w,http.StatusInternalServerError,response{"error":"duplicate_read_failed"});return }
+	defer rows.Close()
+	items:=[]map[string]any{}
+	for rows.Next() {
+		var candidateID,deviceID string
+		var id,databaseID int64
+		var matchedOn,confidence,status,hostname,serial,uuidValue string
+		if err:=rows.Scan(&id,&matchedOn,&confidence,&status,&deviceID,&databaseID,&hostname,&serial,&uuidValue);err!=nil {
+			write(w,http.StatusInternalServerError,response{"error":"duplicate_read_failed"});return
+		}
+		candidateID=deviceID
+		items=append(items,map[string]any{"id":id,"device_id":candidateID,"database_id":databaseID,
+			"hostname":hostname,"serial_number":serial,"smbios_uuid":uuidValue,"matched_on":matchedOn,
+			"confidence":confidence,"status":status})
+	}
+	if err:=rows.Err();err!=nil { write(w,http.StatusInternalServerError,response{"error":"duplicate_read_failed"});return }
+	write(w,http.StatusOK,response{"items":items,"count":len(items)})
+}
+
+func (s *Server) mergeDevice(w http.ResponseWriter, r *http.Request) {
+	sourceID:=r.PathValue("id")
+	var in struct { CanonicalDeviceID string `json:"canonical_device_id"` }
+	if !decode(w,r,&in) { return }
+	in.CanonicalDeviceID=strings.TrimSpace(in.CanonicalDeviceID)
+	if in.CanonicalDeviceID=="" || in.CanonicalDeviceID==sourceID {
+		write(w,http.StatusBadRequest,response{"error":"invalid_canonical_device_id"});return
+	}
+	tx,err:=s.db.BeginTx(r.Context(),nil)
+	if err!=nil { write(w,http.StatusInternalServerError,response{"error":"database_error"});return }
+	defer tx.Rollback()
+	var sourceStatus,sourceMerged,canonicalStatus,canonicalMerged string
+	if err:=tx.QueryRowContext(r.Context(),"SELECT status,COALESCE(merged_into,'') FROM devices WHERE id=?",sourceID).Scan(&sourceStatus,&sourceMerged);err!=nil {
+		write(w,http.StatusNotFound,response{"error":"source_device_not_found"});return
+	}
+	if err:=tx.QueryRowContext(r.Context(),"SELECT status,COALESCE(merged_into,'') FROM devices WHERE id=?",in.CanonicalDeviceID).Scan(&canonicalStatus,&canonicalMerged);err!=nil {
+		write(w,http.StatusNotFound,response{"error":"canonical_device_not_found"});return
+	}
+	if sourceMerged!="" || canonicalMerged!="" || sourceStatus=="merged" || canonicalStatus!="approved" {
+		write(w,http.StatusConflict,response{"error":"invalid_merge_state"});return
+	}
+	mergeStatements:=[]string{
+		`INSERT INTO device_inventory(device_id,category,payload,observed_at,received_at)
+			SELECT ?,category,payload,observed_at,received_at FROM device_inventory WHERE device_id=?
+			ON CONFLICT(device_id,category) DO UPDATE SET payload=excluded.payload,observed_at=excluded.observed_at,received_at=excluded.received_at
+			WHERE julianday(excluded.observed_at)>julianday(device_inventory.observed_at)`,
+		`INSERT INTO device_inventory_history(device_id,category,payload,observed_at,received_at)
+			SELECT ?,category,payload,observed_at,received_at FROM device_inventory_history WHERE device_id=?`,
+		`INSERT OR IGNORE INTO device_network_interfaces(device_id,interface_key,name,mac_address,connection_type,state,addresses_json,mtu,observed_at)
+			SELECT ?,interface_key,name,mac_address,connection_type,state,addresses_json,mtu,observed_at FROM device_network_interfaces WHERE device_id=?`,
+		`INSERT OR IGNORE INTO installed_software(device_id,name,name_normalized,version,publisher,package_manager,first_seen_at,last_seen_at)
+			SELECT ?,name,name_normalized,version,publisher,package_manager,first_seen_at,last_seen_at FROM installed_software WHERE device_id=?`,
+		`INSERT OR IGNORE INTO device_group_memberships(group_id,device_id,added_by)
+			SELECT group_id,?,added_by FROM device_group_memberships WHERE device_id=?`,
+		`INSERT OR IGNORE INTO job_targets(job_id,device_id,status,result,error,updated_at)
+			SELECT job_id,?,status,result,error,updated_at FROM job_targets WHERE device_id=?`,
+		`UPDATE devices SET
+			hostname=COALESCE(NULLIF(hostname,''),(SELECT hostname FROM devices WHERE id=?)),
+			fqdn=COALESCE(NULLIF(fqdn,''),(SELECT fqdn FROM devices WHERE id=?)),
+			manufacturer=COALESCE(NULLIF(manufacturer,''),(SELECT manufacturer FROM devices WHERE id=?)),
+			model=COALESCE(NULLIF(model,''),(SELECT model FROM devices WHERE id=?)),
+			serial_number=COALESCE(NULLIF(serial_number,''),(SELECT serial_number FROM devices WHERE id=?)),
+			smbios_uuid=COALESCE(NULLIF(smbios_uuid,''),(SELECT smbios_uuid FROM devices WHERE id=?)),
+			directory_domain=COALESCE(NULLIF(directory_domain,''),(SELECT directory_domain FROM devices WHERE id=?)),
+			organizational_unit=COALESCE(NULLIF(organizational_unit,''),(SELECT organizational_unit FROM devices WHERE id=?)),
+			last_seen=MAX(COALESCE(last_seen,''),(SELECT COALESCE(last_seen,'') FROM devices WHERE id=?)),
+			merged_into=NULL WHERE id=?`,
+		"DELETE FROM device_inventory WHERE device_id=?",
+		"DELETE FROM device_inventory_history WHERE device_id=?",
+		"DELETE FROM device_network_interfaces WHERE device_id=?",
+		"DELETE FROM installed_software WHERE device_id=?",
+		"DELETE FROM device_group_memberships WHERE device_id=?",
+		"DELETE FROM job_targets WHERE device_id=?",
+		"UPDATE devices SET status='merged',merged_into=?,duplicate_of=? WHERE id=?",
+		"UPDATE device_duplicate_candidates SET status='merged' WHERE device_id=? AND candidate_device_id=?",
+	}
+	for index,statement:=range mergeStatements {
+		var args []any
+		switch index {
+		case 0,1,2,3: args=[]any{in.CanonicalDeviceID,sourceID}
+		case 4,5: args=[]any{in.CanonicalDeviceID,sourceID}
+		case 6: args=[]any{sourceID,sourceID,sourceID,sourceID,sourceID,sourceID,sourceID,sourceID,sourceID,in.CanonicalDeviceID}
+		case 7,8,9,10,11,12: args=[]any{sourceID}
+		case 13: args=[]any{in.CanonicalDeviceID,in.CanonicalDeviceID,sourceID}
+		case 14: args=[]any{sourceID,in.CanonicalDeviceID}
+		}
+		if _,err:=tx.ExecContext(r.Context(),statement,args...);err!=nil {
+			write(w,http.StatusInternalServerError,response{"error":"device_merge_failed","step":index});return
+		}
+	}
+	if err:=s.refreshDynamicMemberships(r.Context(),tx,in.CanonicalDeviceID);err!=nil {
+		write(w,http.StatusInternalServerError,response{"error":"device_merge_group_refresh_failed"});return
+	}
+	if err:=auditEvent(r.Context(),tx,r,"admin","configured-admin","device.merged","success","device",sourceID,map[string]any{"canonical_device_id":in.CanonicalDeviceID});err!=nil {
+		write(w,http.StatusInternalServerError,response{"error":"audit_write_failed"});return
+	}
+	if err:=tx.Commit();err!=nil { write(w,http.StatusInternalServerError,response{"error":"device_merge_commit_failed"});return }
+	write(w,http.StatusOK,response{"status":"merged","device_id":sourceID,"canonical_device_id":in.CanonicalDeviceID})
+}
+
 func (s *Server) createJob(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Action    string          `json:"action"`
