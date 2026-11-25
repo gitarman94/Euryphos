@@ -292,6 +292,46 @@ func migrate(ctx context.Context, db *sql.DB) error {
 			UNIQUE(device_id, interface_key)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_network_interfaces_device ON device_network_interfaces(device_id)`,
+		`CREATE TABLE IF NOT EXISTS device_storage_disks (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+			disk_key TEXT NOT NULL,
+			name TEXT NOT NULL DEFAULT '',
+			model TEXT NOT NULL DEFAULT '',
+			manufacturer TEXT NOT NULL DEFAULT '',
+			serial_number TEXT NOT NULL DEFAULT '',
+			interface_type TEXT NOT NULL DEFAULT '',
+			capacity_bytes INTEGER,
+			logical_block_size INTEGER,
+			is_removable INTEGER,
+			is_rotational INTEGER,
+			status TEXT NOT NULL DEFAULT '',
+			observed_at TEXT NOT NULL,
+			UNIQUE(device_id,disk_key)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_storage_disks_device ON device_storage_disks(device_id)`,
+		`CREATE TABLE IF NOT EXISTS device_storage_volumes (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+			volume_key TEXT NOT NULL,
+			name TEXT NOT NULL DEFAULT '',
+			parent_key TEXT NOT NULL DEFAULT '',
+			device TEXT NOT NULL DEFAULT '',
+			filesystem TEXT NOT NULL DEFAULT '',
+			mount_point TEXT NOT NULL DEFAULT '',
+			volume_label TEXT NOT NULL DEFAULT '',
+			capacity_bytes INTEGER,
+			free_bytes INTEGER,
+			available_bytes INTEGER,
+			used_bytes INTEGER,
+			block_size INTEGER,
+			is_read_only INTEGER,
+			status TEXT NOT NULL DEFAULT '',
+			observed_at TEXT NOT NULL,
+			UNIQUE(device_id,volume_key)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_storage_volumes_device ON device_storage_volumes(device_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_storage_volumes_mount ON device_storage_volumes(mount_point)`,
 		`CREATE TABLE IF NOT EXISTS installed_software (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
@@ -371,6 +411,7 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (7)`,
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (8)`,
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (9)`,
+		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (10)`,
 	}
 	for _, statement := range statements {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
@@ -886,6 +927,8 @@ func (s *Server) inventory(w http.ResponseWriter, r *http.Request) {
 			normalizeErr = s.applyNetworkInventory(r.Context(), tx, deviceID, in.Payload, observedAt)
 		case "software":
 			normalizeErr = s.applySoftwareInventory(r.Context(), tx, deviceID, in.Payload, observedAt)
+		case "storage":
+			normalizeErr = s.applyStorageInventory(r.Context(), tx, deviceID, in.Payload, observedAt)
 		}
 	}
 	if normalizeErr != nil {
@@ -1075,6 +1118,82 @@ func (s *Server) applySystemInventory(ctx context.Context, tx *sql.Tx, deviceID 
 		return s.recordDuplicateCandidates(ctx, tx, deviceID)
 	}
 	return nil
+}
+
+func nullableInt(value sql.NullInt64) any {
+	if !value.Valid { return nil }
+	return value.Int64
+}
+
+func nullableBool(value sql.NullInt64) any {
+	if !value.Valid { return nil }
+	return value.Int64 != 0
+}
+
+func (s *Server) applyStorageInventory(ctx context.Context, tx *sql.Tx, deviceID string, payload []byte, observedAt string) error {
+	var data map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	if err := decoder.Decode(&data); err != nil { return err }
+	status := strings.ToLower(textValue(data["collection_status"]))
+	if status != "collected" {
+		// Unavailable/unsupported collection must not erase the last known inventory.
+		return nil
+	}
+	disks, ok := data["disks"].([]any)
+	if !ok { return errors.New("storage disks must be an array") }
+	volumes, ok := data["volumes"].([]any)
+	if !ok { return errors.New("storage volumes must be an array") }
+	if len(disks) > 256 || len(volumes) > 10000 {
+		return errors.New("storage inventory exceeds configured record limits")
+	}
+	if _,err:=tx.ExecContext(ctx,"DELETE FROM device_storage_disks WHERE device_id=?",deviceID);err!=nil{return err}
+	if _,err:=tx.ExecContext(ctx,"DELETE FROM device_storage_volumes WHERE device_id=?",deviceID);err!=nil{return err}
+	diskStmt,err:=tx.PrepareContext(ctx,`INSERT INTO device_storage_disks(
+		device_id,disk_key,name,model,manufacturer,serial_number,interface_type,capacity_bytes,
+		logical_block_size,is_removable,is_rotational,status,observed_at
+	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+	if err!=nil{return err}
+	defer diskStmt.Close()
+	seenDisks:=make(map[string]bool,len(disks))
+	for _,raw:=range disks{
+		item:=mapValue(raw)
+		key:=textValue(item["key"])
+		if key==""{return errors.New("storage disk key is required")}
+		if seenDisks[key]{return errors.New("duplicate storage disk key")}
+		seenDisks[key]=true
+		if _,err:=diskStmt.ExecContext(ctx,deviceID,key,textValue(item["name"]),textValue(item["model"]),
+			textValue(item["manufacturer"]),textValue(item["serial_number"]),textValue(item["interface_type"]),
+			integerValue(item["capacity_bytes"]),integerValue(item["logical_block_size"]),
+			nullableBoolArgument(item["is_removable"]),nullableBoolArgument(item["is_rotational"]),
+			textValue(item["status"]),observedAt);err!=nil{return err}
+	}
+	volumeStmt,err:=tx.PrepareContext(ctx,`INSERT INTO device_storage_volumes(
+		device_id,volume_key,name,parent_key,device,filesystem,mount_point,volume_label,
+		capacity_bytes,free_bytes,available_bytes,used_bytes,block_size,is_read_only,status,observed_at
+	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+	if err!=nil{return err}
+	defer volumeStmt.Close()
+	seenVolumes:=make(map[string]bool,len(volumes))
+	for _,raw:=range volumes{
+		item:=mapValue(raw)
+		key:=textValue(item["key"])
+		if key==""{return errors.New("storage volume key is required")}
+		if seenVolumes[key]{return errors.New("duplicate storage volume key")}
+		seenVolumes[key]=true
+		if _,err:=volumeStmt.ExecContext(ctx,deviceID,key,textValue(item["name"]),textValue(item["parent_key"]),
+			textValue(item["device"]),textValue(item["filesystem"]),textValue(item["mount_point"]),
+			textValue(item["volume_label"]),integerValue(item["capacity_bytes"]),integerValue(item["free_bytes"]),
+			integerValue(item["available_bytes"]),integerValue(item["used_bytes"]),integerValue(item["block_size"]),
+			nullableBoolArgument(item["is_read_only"]),textValue(item["status"]),observedAt);err!=nil{return err}
+	}
+	_,err=tx.ExecContext(ctx,"UPDATE devices SET last_inventory_at=? WHERE id=?",observedAt,deviceID)
+	return err
+}
+
+func nullableBoolArgument(value any) any {
+	if value==nil{return nil}
+	return boolInt(value)
 }
 
 func boolInt(value any) int {
@@ -1551,7 +1670,58 @@ func (s *Server) deviceDetail(w http.ResponseWriter, r *http.Request) {
 		write(w,http.StatusInternalServerError,response{"error":"network_interfaces_read_failed"})
 		return
 	}
-	write(w, http.StatusOK, response{"device":device,"inventory":inventory,"network_interfaces":networkInterfaces})
+	diskRows, err := s.db.QueryContext(r.Context(), `SELECT disk_key,name,model,manufacturer,serial_number,interface_type,
+		capacity_bytes,logical_block_size,is_removable,is_rotational,status,observed_at
+		FROM device_storage_disks WHERE device_id=? ORDER BY name COLLATE NOCASE,disk_key`, r.PathValue("id"))
+	if err != nil {
+		write(w,http.StatusInternalServerError,response{"error":"storage_disks_read_failed"})
+		return
+	}
+	defer diskRows.Close()
+	disks := []map[string]any{}
+	for diskRows.Next() {
+		var key,name,model,manufacturer,serial,interfaceType,status,observedAt string
+		var capacity,blockSize,removable,rotational sql.NullInt64
+		if err := diskRows.Scan(&key,&name,&model,&manufacturer,&serial,&interfaceType,&capacity,&blockSize,&removable,&rotational,&status,&observedAt); err != nil {
+			write(w,http.StatusInternalServerError,response{"error":"storage_disks_read_failed"})
+			return
+		}
+		disks=append(disks,map[string]any{
+			"key":key,"name":name,"model":model,"manufacturer":manufacturer,"serial_number":serial,
+			"interface_type":interfaceType,"capacity_bytes":nullableInt(capacity),"logical_block_size":nullableInt(blockSize),
+			"is_removable":nullableBool(removable),"is_rotational":nullableBool(rotational),
+			"status":status,"observed_at":observedAt,
+		})
+	}
+	if err:=diskRows.Err();err!=nil { write(w,http.StatusInternalServerError,response{"error":"storage_disks_read_failed"});return }
+
+	volumeRows, err := s.db.QueryContext(r.Context(), `SELECT volume_key,name,parent_key,device,filesystem,mount_point,volume_label,
+		capacity_bytes,free_bytes,available_bytes,used_bytes,block_size,is_read_only,status,observed_at
+		FROM device_storage_volumes WHERE device_id=? ORDER BY mount_point COLLATE NOCASE,volume_key`, r.PathValue("id"))
+	if err != nil {
+		write(w,http.StatusInternalServerError,response{"error":"storage_volumes_read_failed"})
+		return
+	}
+	defer volumeRows.Close()
+	volumes := []map[string]any{}
+	for volumeRows.Next() {
+		var key,name,parentKey,device,filesystem,mountPoint,label,status,observedAt string
+		var capacity,free,available,used,blockSize,readOnly sql.NullInt64
+		if err:=volumeRows.Scan(&key,&name,&parentKey,&device,&filesystem,&mountPoint,&label,
+			&capacity,&free,&available,&used,&blockSize,&readOnly,&status,&observedAt);err!=nil {
+			write(w,http.StatusInternalServerError,response{"error":"storage_volumes_read_failed"})
+			return
+		}
+		volumes=append(volumes,map[string]any{
+			"key":key,"name":name,"parent_key":parentKey,"device":device,"filesystem":filesystem,
+			"mount_point":mountPoint,"volume_label":label,"capacity_bytes":nullableInt(capacity),
+			"free_bytes":nullableInt(free),"available_bytes":nullableInt(available),"used_bytes":nullableInt(used),
+			"block_size":nullableInt(blockSize),"is_read_only":nullableBool(readOnly),"status":status,"observed_at":observedAt,
+		})
+	}
+	if err:=volumeRows.Err();err!=nil { write(w,http.StatusInternalServerError,response{"error":"storage_volumes_read_failed"});return }
+	write(w, http.StatusOK, response{"device":device,"inventory":inventory,"network_interfaces":networkInterfaces,
+		"storage_disks":disks,"storage_volumes":volumes})
 }
 
 // inventoryHistory returns append-only inventory observations. The cursor is the
@@ -2102,6 +2272,28 @@ func (s *Server) mergeDevice(w http.ResponseWriter, r *http.Request) {
 		if _,err:=tx.ExecContext(r.Context(),statement,args...);err!=nil {
 			write(w,http.StatusInternalServerError,response{"error":"device_merge_failed","step":index});return
 		}
+	}
+	if _,err:=tx.ExecContext(r.Context(),`INSERT OR IGNORE INTO device_storage_disks(
+		device_id,disk_key,name,model,manufacturer,serial_number,interface_type,capacity_bytes,
+		logical_block_size,is_removable,is_rotational,status,observed_at)
+		SELECT ?,disk_key,name,model,manufacturer,serial_number,interface_type,capacity_bytes,
+		logical_block_size,is_removable,is_rotational,status,observed_at
+		FROM device_storage_disks WHERE device_id=?`,in.CanonicalDeviceID,sourceID);err!=nil{
+		write(w,http.StatusInternalServerError,response{"error":"device_merge_storage_disks_failed"});return
+	}
+	if _,err:=tx.ExecContext(r.Context(),`INSERT OR IGNORE INTO device_storage_volumes(
+		device_id,volume_key,name,parent_key,device,filesystem,mount_point,volume_label,
+		capacity_bytes,free_bytes,available_bytes,used_bytes,block_size,is_read_only,status,observed_at)
+		SELECT ?,volume_key,name,parent_key,device,filesystem,mount_point,volume_label,
+		capacity_bytes,free_bytes,available_bytes,used_bytes,block_size,is_read_only,status,observed_at
+		FROM device_storage_volumes WHERE device_id=?`,in.CanonicalDeviceID,sourceID);err!=nil{
+		write(w,http.StatusInternalServerError,response{"error":"device_merge_storage_volumes_failed"});return
+	}
+	if _,err:=tx.ExecContext(r.Context(),"DELETE FROM device_storage_disks WHERE device_id=?",sourceID);err!=nil{
+		write(w,http.StatusInternalServerError,response{"error":"device_merge_storage_disks_delete_failed"});return
+	}
+	if _,err:=tx.ExecContext(r.Context(),"DELETE FROM device_storage_volumes WHERE device_id=?",sourceID);err!=nil{
+		write(w,http.StatusInternalServerError,response{"error":"device_merge_storage_volumes_delete_failed"});return
 	}
 	if err:=s.refreshDynamicMemberships(r.Context(),tx,in.CanonicalDeviceID);err!=nil {
 		write(w,http.StatusInternalServerError,response{"error":"device_merge_group_refresh_failed"});return
