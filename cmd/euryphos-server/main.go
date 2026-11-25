@@ -332,6 +332,27 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_storage_volumes_device ON device_storage_volumes(device_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_storage_volumes_mount ON device_storage_volumes(mount_point)`,
+		`CREATE TABLE IF NOT EXISTS device_services (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+			service_key TEXT NOT NULL,
+			name TEXT NOT NULL DEFAULT '',
+			display_name TEXT NOT NULL DEFAULT '',
+			manager TEXT NOT NULL DEFAULT '',
+			load_state TEXT NOT NULL DEFAULT '',
+			active_state TEXT NOT NULL DEFAULT '',
+			sub_state TEXT NOT NULL DEFAULT '',
+			start_type TEXT NOT NULL DEFAULT '',
+			account_name TEXT NOT NULL DEFAULT '',
+			executable_path TEXT NOT NULL DEFAULT '',
+			process_id INTEGER,
+			description TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT '',
+			observed_at TEXT NOT NULL,
+			UNIQUE(device_id,service_key)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_services_device ON device_services(device_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_services_state ON device_services(manager,active_state,start_type)`,
 		`CREATE TABLE IF NOT EXISTS installed_software (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
@@ -412,6 +433,7 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (8)`,
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (9)`,
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (10)`,
+		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (11)`,
 	}
 	for _, statement := range statements {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
@@ -915,13 +937,15 @@ func (s *Server) inventory(w http.ResponseWriter, r *http.Request) {
 	}
 	deviceID := r.PathValue("id")
 	var normalizeErr error
-	if unchangedPayload && (in.Category=="network" || in.Category=="software" || in.Category=="storage") {
+	if unchangedPayload && (in.Category=="network" || in.Category=="software" || in.Category=="storage" || in.Category=="services") {
 		if in.Category=="software" {
 			_,normalizeErr=tx.ExecContext(r.Context(),"UPDATE installed_software SET last_seen_at=? WHERE device_id=?",observedAt,deviceID)
 		} else if in.Category=="storage" {
 			if _,normalizeErr=tx.ExecContext(r.Context(),"UPDATE device_storage_disks SET observed_at=? WHERE device_id=?",observedAt,deviceID); normalizeErr==nil {
 				_,normalizeErr=tx.ExecContext(r.Context(),"UPDATE device_storage_volumes SET observed_at=? WHERE device_id=?",observedAt,deviceID)
 			}
+		} else if in.Category=="services" {
+			_,normalizeErr=tx.ExecContext(r.Context(),"UPDATE device_services SET observed_at=? WHERE device_id=?",observedAt,deviceID)
 		}
 	} else {
 		switch in.Category {
@@ -933,6 +957,8 @@ func (s *Server) inventory(w http.ResponseWriter, r *http.Request) {
 			normalizeErr = s.applySoftwareInventory(r.Context(), tx, deviceID, in.Payload, observedAt)
 		case "storage":
 			normalizeErr = s.applyStorageInventory(r.Context(), tx, deviceID, in.Payload, observedAt)
+		case "services":
+			normalizeErr = s.applyServicesInventory(r.Context(), tx, deviceID, in.Payload, observedAt)
 		}
 	}
 	if normalizeErr != nil {
@@ -1122,6 +1148,50 @@ func (s *Server) applySystemInventory(ctx context.Context, tx *sql.Tx, deviceID 
 		return s.recordDuplicateCandidates(ctx, tx, deviceID)
 	}
 	return nil
+}
+
+func (s *Server) applyServicesInventory(ctx context.Context, tx *sql.Tx, deviceID string, payload []byte, observedAt string) error {
+	var data map[string]any
+	decoder:=json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	if err:=decoder.Decode(&data);err!=nil{return err}
+	if strings.ToLower(textValue(data["collection_status"]))!="collected"{
+		// Unavailable providers must not erase known service inventory.
+		return nil
+	}
+	items,ok:=data["services"].([]any)
+	if !ok{return errors.New("services must be an array")}
+	if len(items)>20000{return errors.New("service inventory exceeds 20000 records")}
+	if _,err:=tx.ExecContext(ctx,"DELETE FROM device_services WHERE device_id=?",deviceID);err!=nil{return err}
+	stmt,err:=tx.PrepareContext(ctx,`INSERT INTO device_services(
+		device_id,service_key,name,display_name,manager,load_state,active_state,sub_state,start_type,
+		account_name,executable_path,process_id,description,status,observed_at
+	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+	if err!=nil{return err}
+	defer stmt.Close()
+	manager:=textValue(data["manager"])
+	seen:=make(map[string]bool,len(items))
+	for _,raw:=range items{
+		item:=mapValue(raw)
+		key:=textValue(item["key"])
+		if key==""{key=textValue(item["name"])}
+		if key==""{return errors.New("service key is required")}
+		if seen[key]{return errors.New("duplicate service key")}
+		seen[key]=true
+		rowManager:=textValue(item["manager"])
+		if rowManager==""{rowManager=manager}
+		name:=textValue(item["name"])
+		if name==""{name=key}
+		activeState:=textValue(item["active_state"])
+		status:=textValue(item["status"])
+		if status==""{status=activeState}
+		if _,err:=stmt.ExecContext(ctx,deviceID,key,name,textValue(item["display_name"]),rowManager,
+			textValue(item["load_state"]),activeState,textValue(item["sub_state"]),textValue(item["start_type"]),
+			textValue(item["account_name"]),textValue(item["executable_path"]),integerValue(item["process_id"]),
+			textValue(item["description"]),status,observedAt);err!=nil{return err}
+	}
+	_,err=tx.ExecContext(ctx,"UPDATE devices SET last_inventory_at=? WHERE id=?",observedAt,deviceID)
+	return err
 }
 
 func nullableInt(value sql.NullInt64) any {
@@ -1724,8 +1794,29 @@ func (s *Server) deviceDetail(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	if err:=volumeRows.Err();err!=nil { write(w,http.StatusInternalServerError,response{"error":"storage_volumes_read_failed"});return }
+	serviceRows,err:=s.db.QueryContext(r.Context(),`SELECT service_key,name,display_name,manager,load_state,active_state,sub_state,
+		start_type,account_name,executable_path,process_id,description,status,observed_at
+		FROM device_services WHERE device_id=? ORDER BY name COLLATE NOCASE,service_key`,r.PathValue("id"))
+	if err!=nil { write(w,http.StatusInternalServerError,response{"error":"service_inventory_read_failed"});return }
+	defer serviceRows.Close()
+	services:=[]map[string]any{}
+	for serviceRows.Next(){
+		var key,name,displayName,manager,loadState,activeState,subState,startType,account,path,description,status,observedAt string
+		var processID sql.NullInt64
+		if err:=serviceRows.Scan(&key,&name,&displayName,&manager,&loadState,&activeState,&subState,&startType,
+			&account,&path,&processID,&description,&status,&observedAt);err!=nil{
+			write(w,http.StatusInternalServerError,response{"error":"service_inventory_read_failed"});return
+		}
+		services=append(services,map[string]any{
+			"key":key,"name":name,"display_name":displayName,"manager":manager,
+			"load_state":loadState,"active_state":activeState,"sub_state":subState,"start_type":startType,
+			"account_name":account,"executable_path":path,"process_id":nullableInt(processID),
+			"description":description,"status":status,"observed_at":observedAt,
+		})
+	}
+	if err:=serviceRows.Err();err!=nil{write(w,http.StatusInternalServerError,response{"error":"service_inventory_read_failed"});return}
 	write(w, http.StatusOK, response{"device":device,"inventory":inventory,"network_interfaces":networkInterfaces,
-		"storage_disks":disks,"storage_volumes":volumes})
+		"storage_disks":disks,"storage_volumes":volumes,"services":services})
 }
 
 // inventoryHistory returns append-only inventory observations. The cursor is the
@@ -2298,6 +2389,17 @@ func (s *Server) mergeDevice(w http.ResponseWriter, r *http.Request) {
 	}
 	if _,err:=tx.ExecContext(r.Context(),"DELETE FROM device_storage_volumes WHERE device_id=?",sourceID);err!=nil{
 		write(w,http.StatusInternalServerError,response{"error":"device_merge_storage_volumes_delete_failed"});return
+	}
+	if _,err:=tx.ExecContext(r.Context(),`INSERT OR IGNORE INTO device_services(
+		device_id,service_key,name,display_name,manager,load_state,active_state,sub_state,start_type,
+		account_name,executable_path,process_id,description,status,observed_at)
+		SELECT ?,service_key,name,display_name,manager,load_state,active_state,sub_state,start_type,
+		account_name,executable_path,process_id,description,status,observed_at
+		FROM device_services WHERE device_id=?`,in.CanonicalDeviceID,sourceID);err!=nil{
+		write(w,http.StatusInternalServerError,response{"error":"device_merge_services_failed"});return
+	}
+	if _,err:=tx.ExecContext(r.Context(),"DELETE FROM device_services WHERE device_id=?",sourceID);err!=nil{
+		write(w,http.StatusInternalServerError,response{"error":"device_merge_services_delete_failed"});return
 	}
 	if err:=s.refreshDynamicMemberships(r.Context(),tx,in.CanonicalDeviceID);err!=nil {
 		write(w,http.StatusInternalServerError,response{"error":"device_merge_group_refresh_failed"});return
