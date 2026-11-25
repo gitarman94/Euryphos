@@ -1,177 +1,127 @@
-<!--
-Euryphos server repository landing page.
-Detailed engineering state and continuation instructions live in docs/PROJECT_HANDOFF.md.
--->
-
 <div align="center">
 
 # Euryphos
 
-### See your fleet clearly. Manage it deliberately.
+### Fleet visibility. Controlled operations.
 
-Centralized endpoint visibility, inventory, and controlled operations for Linux and Windows environments.
-
-[Server repository](https://github.com/gitarman94/Euryphos) · [Endpoint agent](https://github.com/gitarman94/Euryphos-Agent) · [Project handoff](docs/PROJECT_HANDOFF.md)
+A Go-based systems-management platform for discovering, understanding, and safely managing Linux and Windows endpoints.
 
 [![Server CI](https://github.com/gitarman94/Euryphos/actions/workflows/go.yml/badge.svg?branch=main)](https://github.com/gitarman94/Euryphos/actions/workflows/go.yml)
+
+[Server](https://github.com/gitarman94/Euryphos) · [Endpoint agent](https://github.com/gitarman94/Euryphos-Agent) · [Engineering handoff](docs/PROJECT_HANDOFF.md)
 
 </div>
 
 > [!WARNING]
-> **Early development — not production-ready.** Euryphos is being built toward enterprise fleet management, but its endpoint workflows, deployment process, security controls, and supported-platform behavior have not completed production qualification. Do not use it for unattended patching or security-critical fleet operations.
+> **Early development — not production-ready.** The server has been installed and health-checked in a Debian 13 Proxmox LXC test container. The endpoint agent has not yet completed a real server-to-agent deployment test. Do not use Euryphos for unattended patching or security-critical fleet operations.
 
----
+## What it is
 
-## One management plane, two small components
+Euryphos is being built to provide one reliable view of an organization's managed computers, followed by controlled, auditable operations across individual devices, groups, or the fleet.
 
-Euryphos is designed to give administrators a dependable picture of every enrolled computer and a controlled, auditable way to manage those systems. It is intended to grow beyond patching into inventory, software lifecycle, configuration, and day-to-day endpoint operations.
+The product is designed around a simple lifecycle:
 
-| Component | Responsibility |
-| --- | --- |
-| **[Euryphos server](https://github.com/gitarman94/Euryphos)** | Central Go service, HTTP API, SQLite database, and browser console |
-| **[Euryphos Agent](https://github.com/gitarman94/Euryphos-Agent)** | Separately installed endpoint service that inventories devices and communicates with the server |
+**Discover → Inventory → Search → Target → Approve → Dispatch → Execute → Verify → Audit**
 
-The server and agent are intentionally kept in separate repositories. The agent initiates authenticated outbound communication; the server does not need to open inbound management ports on every endpoint.
-
-## What is implemented today
-
-The current foundation includes:
-
-- **Device enrollment and identity** — enrollment tokens, per-device credentials, administrator approval, and revocation.
-- **Fleet inventory** — system, network, storage, service, and installed-software data, with normalized records and inventory history.
-- **Device visibility** — searchable, filterable, paginated device records and server-derived online/offline state.
-- **Duplicate review** — identify possible duplicate computers and explicitly merge records while preserving device identity continuity.
-- **Groups and targeting** — static and rule-based groups, with target snapshots recorded when jobs are created.
-- **Controlled job workflow** — queued work, per-device claims, result reporting, stale-claim protection, and an administrator queue for overdue jobs.
-- **Operational audit trail** — records for important administrative, enrollment, group, job, and alert actions.
-- **Browser console** — initial fleet overview, device details, duplicate review, groups, jobs, and audit views.
-
-The endpoint agent has initial Linux and Windows inventory providers and an initial service-control executor. The server recognizes additional future job types, but an accepted action name is **not** proof that an endpoint executor is implemented.
-
-## What is still being built
-
-The project is not yet a complete endpoint-management suite. Major work remains, including:
-
-- Completing and runtime-testing the server-to-agent workflow on real Linux and Windows systems.
-- Proving safe job execution, interruption handling, recovery, and verification before enabling broader automation.
-- Implementing and validating patch discovery and deployment.
-- Completing software installation/removal and configuration-management workflows.
-- Expanding the dashboard, inventory depth, reporting, and enterprise access controls.
-- Qualifying fresh installation, upgrades, rollback, reboot recovery, and database restore on Debian 13 Proxmox.
-- Security review, scale testing, and platform-specific support certification.
-
-See the [Project Context and Continuation Handoff](docs/PROJECT_HANDOFF.md) for the verified implementation state, owner decisions, architecture, test evidence, and prioritized work remaining.
+A queued job is not a completed action. Euryphos must distinguish delivery, execution, verification, and failure instead of presenting optimistic status.
 
 ## Architecture
 
-Euryphos is deliberately straightforward:
+Euryphos is intentionally split into two small Go projects:
 
-- **Go** for the server and endpoint agent.
-- **SQLite** embedded in the server process; no separate database service.
-- **Native systemd service** for the server deployment.
-- **Separate server and agent repositories.**
-- **Typed, auditable operations** rather than an unrestricted remote-shell design.
-- **Bounded inventory, queries, and job processing** to keep fleet growth manageable.
+| Component | Responsibility |
+| --- | --- |
+| **[Euryphos server](https://github.com/gitarman94/Euryphos)** | Central API, SQLite persistence, browser console, fleet and job control |
+| **[Euryphos-Agent](https://github.com/gitarman94/Euryphos-Agent)** | Separately installed endpoint client, native inventory providers, typed endpoint actions |
 
-The server is intended to run as a single instance with its SQLite database on persistent local storage. SQLite WAL improves reader concurrency, but it does not make a shared database file suitable for multiple active server replicas.
+The server does not need to open inbound management ports on every computer. Agents initiate authenticated outbound connections to the server.
 
-## Install the server
+**Technology decisions:** Go for both components; embedded SQLite on the server; native systemd service in the Debian 13 Proxmox LXC deployment. No PostgreSQL, Docker, Compose, Python, or Rust runtime is required.
 
-The first deployment target is a **Debian 13 Proxmox LXC container** running systemd. The installer supports Linux `amd64` and `arm64`.
+## Current capabilities
 
-Run the installer as `root` inside the Debian 13 container. The commands below download a pinned installer revision, verify the expected revision string, check Bash syntax, and build from current public `main` for pre-release testing.
+### Server
 
-**Initial installation:**
+- Administrator-token login and per-device enrollment credentials.
+- Pending device approval, identity, revocation, and duplicate review.
+- Device inventory API with latest snapshots and change history.
+- Normalized system, network, storage, service, and software records.
+- Static and rule-based device groups.
+- Typed job queue, delivery claims, result reporting, and overdue-job review.
+- Initial service-control workflow and operational audit log.
+- Browser views for Overview, Devices, Groups, Jobs, and Audit.
+
+### Endpoint agent
+
+The agent currently collects and uploads five inventory categories:
+
+| Category | Current collection |
+| --- | --- |
+| **System** | OS and host identity, hardware/BIOS, CPU model and core counts, total/available memory, uptime, root-volume capacity, timezone, and selected platform facts |
+| **Network** | Interfaces, addresses, MAC addresses, DNS, gateway, and available DHCP details |
+| **Storage** | Physical disks and mounted volumes, capacity, free space, model/serial data where available |
+| **Services** | Linux systemd services or Windows services and their current/configured state |
+| **Software** | Linux DPKG/RPM/pacman packages or Windows machine uninstall-registry entries |
+
+Full inventory is sent after enrollment/approval and then on a 15-minute default interval. A server-requested `inventory.refresh` triggers an immediate upload. A lightweight heartbeat and job poll run every 30 seconds by default.
+
+The current agent has an initial typed service-control executor. Most other management actions are not implemented.
+
+## Important limitations
+
+The five inventory categories above are real agent collection and upload paths, but they are not a complete inventory of every system fact. Provider coverage varies by operating system and permissions. Missing, unsupported, or unavailable facts must not be interpreted as zero or as a successful empty result.
+
+**Performance monitoring is not implemented yet.** The current system inventory includes hardware capacity facts such as CPU model/core counts and total/available memory; it does not provide CPU utilization history, memory pressure trends, disk I/O rates, network throughput, or process-level monitoring. A separate, bounded telemetry pipeline and Performance UI are planned.
+
+Also not production-ready:
+
+- Linux/Windows agent installers, service integration, signed releases, self-update, and rollback.
+- Real-platform server/agent end-to-end qualification.
+- Patch discovery and installation.
+- Software deployment and configuration enforcement.
+- Enterprise identity controls such as RBAC, MFA, and SSO.
+- Full security review, scale testing, and operational recovery qualification.
+
+A server action being accepted or displayed does not prove that an agent executor exists. Unsupported actions must report that they are not implemented.
+
+## Server installation
+
+The first deployment target is a **Debian 13 Proxmox LXC container** with systemd. The installer supports Linux amd64 and arm64.
+
+Run inside the container as root. This pre-release source-build command downloads a pinned installer revision, verifies its revision and Bash syntax, and builds the current public server source:
 
 ```bash
 apt-get update && apt-get install -y ca-certificates curl && f="$(mktemp)" && curl --retry 3 --retry-all-errors -fsSL "https://raw.githubusercontent.com/gitarman94/Euryphos/39bd57efc27907612e74c26506fe9dc2da8a4522/scripts/install.sh" -o "$f" && grep -Fq 'INSTALLER_REVISION="2026-11-25.7"' "$f" && bash -n "$f" && EURYPHOS_SOURCE_BUILD=1 bash "$f" install; result=$?; [[ -z "${f:-}" ]] || rm -f "$f"; exit "$result"
 ```
 
-**Upgrade an existing installation** (preserves configuration, tokens, database, and creates a pre-upgrade SQLite backup):
+The same installer supports `upgrade`, data-preserving `uninstall`, destructive `uninstall --purge`, and `reinstall --purge`. Read the [server deployment and recovery instructions](docs/PROJECT_HANDOFF.md#11-server-deployment-configuration-reference) before using lifecycle commands. Purge permanently deletes the local database, configuration, backups, and tokens.
 
-```bash
-f="$(mktemp)" && curl --retry 3 --retry-all-errors -fsSL "https://raw.githubusercontent.com/gitarman94/Euryphos/39bd57efc27907612e74c26506fe9dc2da8a4522/scripts/install.sh" -o "$f" && grep -Fq 'INSTALLER_REVISION="2026-11-25.7"' "$f" && bash -n "$f" && EURYPHOS_SOURCE_BUILD=1 bash "$f" upgrade; result=$?; [[ -z "${f:-}" ]] || rm -f "$f"; exit "$result"
-```
+### Initial sizing guidance
 
-The pre-release source-build mode resolves the current public `main` commit by SHA, downloads that source archive, and builds for the CT architecture. It installs Debian's `golang-go`; the Go build tools remain in the CT. This is a **testing path**, not an immutable release deployment. Upgrade mode requires the existing `/etc/euryphos/euryphos.env` and refuses to rotate or replace administrator/enrollment tokens. It backs up the SQLite database before switching the server binary.
-
-### Initial server sizing guidance
-
-These are conservative starting recommendations for a small test deployment, not a guaranteed fleet-capacity calculation:
-
-| Resource | Minimum baseline | Recommended starting point |
+| Resource | Small test baseline | Recommended starting point |
 | --- | ---: | ---: |
-| CPU | 2 vCPU | 4 vCPU for larger fleets or concurrent work |
+| CPU | 2 vCPU | 4 vCPU |
 | RAM | 2 GiB for source-build testing | 4 GiB |
-| Disk | 10 GiB total, with 5 GiB free | 20 GiB total, with 10 GiB free |
+| Disk | 10 GiB total / 5 GiB free | 20 GiB total / 10 GiB free |
 
-The installer warns rather than silently changing Proxmox settings. Increase the CT resources in Proxmox and restart the container when appropriate. Actual database capacity depends on enrolled device count, inventory detail, collection frequency, and history retention; these initial figures are not a production sizing guarantee.
+These are initial test figures, not a fleet-capacity guarantee. Actual requirements depend on endpoint count, inventory volume, collection cadence, history retention, and job concurrency.
 
-After a successful install, the installer prints the available CT IP address and login-page URL. The default configuration has `EURYPHOS_COOKIE_SECURE=true`: the HTTP page can be reached for a connectivity check, but authenticated browser sessions require HTTPS. Put the server behind a trusted HTTPS reverse proxy and use `https://<your-hostname>/login` before normal administrator use. The installer does not configure DNS, TLS, firewall rules, or the reverse proxy.
+### Secure access
 
-After the first versioned GitHub release is published, the normal prebuilt-binary install command will be:
+The installed default is `EURYPHOS_COOKIE_SECURE=true`. Browser authentication requires HTTPS even though the HTTP login page can be viewed. Configure a trusted HTTPS reverse proxy and use `https://<your-hostname>/login` before normal use. Do not expose the raw port 8080 listener to the public internet.
 
-```bash
-apt-get update && apt-get install -y ca-certificates curl && bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/gitarman94/Euryphos/main/scripts/install.sh | bash -s -- install'
-```
+The current test container has secure cookies temporarily disabled for LAN-only UI testing. Restore `EURYPHOS_COOKIE_SECURE=true` after HTTPS is configured. Do not use the temporary HTTP configuration on an untrusted network.
 
-The release installer downloads the matching Linux archive and verifies its SHA-256 checksum before installation. Both paths create the unprivileged service account, install the systemd unit, and create the initial configuration and secrets. The installer explicitly sets release-directory traversal permissions despite its restrictive file-creation umask, then checks that the `euryphos` service account can read and execute the binary before switching the active version. It prints systemd diagnostics if startup or the health check fails. The default service listener is port `8080`; place it behind a trusted HTTPS reverse proxy before exposing it to untrusted networks.
+## Enrolling computers
 
-### Uninstall, purge, and clean reinstall
+The server does not discover or install agents automatically. Each endpoint needs a separately installed Euryphos-Agent, configured with the server URL and enrollment secret. Enrollment creates a pending device; an administrator must approve it before the endpoint's normal heartbeat and inventory operations are accepted.
 
-**Uninstall but keep data** (removes the systemd service and server binaries, while retaining configuration, credentials, SQLite database, backups, and the `euryphos` service account):
+The agent repository is currently private and does not yet publish supported endpoint installers or signed releases. Its [README](https://github.com/gitarman94/Euryphos-Agent) and [project handoff](https://github.com/gitarman94/Euryphos-Agent/blob/main/docs/PROJECT_HANDOFF.md) describe the current source-build enrollment path and platform limitations.
 
-```bash
-f="$(mktemp)" && curl --retry 3 --retry-all-errors -fsSL "https://raw.githubusercontent.com/gitarman94/Euryphos/39bd57efc27907612e74c26506fe9dc2da8a4522/scripts/install.sh" -o "$f" && grep -Fq 'INSTALLER_REVISION="2026-11-25.7"' "$f" && bash -n "$f" && bash "$f" uninstall; result=$?; [[ -z "${f:-}" ]] || rm -f "$f"; exit "$result"
-```
+## Project status and next work
 
-**Uninstall and permanently delete all local Euryphos data**:
+The next integration milestone is to enroll a real Linux endpoint, approve it, verify all five inventory categories in the server and browser console, and exercise one safe typed job. Repeat the workflow on Windows before claiming platform support.
 
-```bash
-f="$(mktemp)" && curl --retry 3 --retry-all-errors -fsSL "https://raw.githubusercontent.com/gitarman94/Euryphos/39bd57efc27907612e74c26506fe9dc2da8a4522/scripts/install.sh" -o "$f" && grep -Fq 'INSTALLER_REVISION="2026-11-25.7"' "$f" && bash -n "$f" && bash "$f" uninstall --purge; result=$?; [[ -z "${f:-}" ]] || rm -f "$f"; exit "$result"
-```
+After that, priorities include reliable job recovery, read-only patch discovery, endpoint installers, and the separate performance-telemetry pipeline. Performance charts will be added only after the agent collects timestamped samples and the server stores and serves them with bounded retention.
 
-**Force a clean reinstall and generate new administrator/enrollment tokens**:
-
-```bash
-f="$(mktemp)" && curl --retry 3 --retry-all-errors -fsSL "https://raw.githubusercontent.com/gitarman94/Euryphos/39bd57efc27907612e74c26506fe9dc2da8a4522/scripts/install.sh" -o "$f" && grep -Fq 'INSTALLER_REVISION="2026-11-25.7"' "$f" && bash -n "$f" && EURYPHOS_SOURCE_BUILD=1 bash "$f" reinstall --purge; result=$?; [[ -z "${f:-}" ]] || rm -f "$f"; exit "$result"
-```
-
-Both purge operations require the operator to type `DELETE EURYPHOS DATA` at the terminal. They remove `/etc/euryphos`, `/var/lib/euryphos` (including SQLite and backups), `/opt/euryphos`, the systemd unit, and the `euryphos` service account. They cannot be undone. A clean reinstall runs the resource pre-flight before asking for that confirmation.
-
-Repeatable fresh-install, in-place upgrade, failed-upgrade rollback, reboot, and database restore qualification in a disposable Debian 13 Proxmox CT are still required.
-
-After installation, the service is managed with:
-
-```bash
-systemctl status euryphos
-journalctl -u euryphos -f
-```
-
-The initial administrator and enrollment tokens are stored in the root-readable configuration file at `/etc/euryphos/euryphos.env`.
-
-## Build from source
-
-Requirements: Go 1.23 or later.
-
-```bash
-git clone https://github.com/gitarman94/Euryphos.git
-cd Euryphos
-go test ./...
-go vet ./...
-go build ./cmd/euryphos-server
-```
-
-For local development, set independent high-entropy values for `EURYPHOS_ADMIN_TOKEN` and `EURYPHOS_ENROLLMENT_TOKEN`, choose a persistent `EURYPHOS_DB_PATH`, then run `go run ./cmd/euryphos-server`. The default development listener is `:8080`.
-
-## Platform direction
-
-The intended endpoint support matrix covers Arch-family distributions (including CachyOS), Debian-family distributions (including Debian, Ubuntu, Mint, and LMDE), Fedora-family distributions (including Fedora and Nobara), Bazzite/Atomic systems using image-aware workflows, and Windows. A native macOS agent is planned for a later phase. These are project targets, not a statement that every distribution is currently certified.
-
-## Project status and contribution context
-
-This repository is the **server only**. For current engineering instructions, source map, API behavior, constraints, and next tasks, read the single detailed [Project Context and Continuation Handoff](docs/PROJECT_HANDOFF.md). Keep that file synchronized with meaningful implementation changes; avoid creating duplicate roadmap and status documents.
-
-## License
-
-Euryphos is distributed under the **Euryphos Personal Use License (EPUL) 1.0**. It is not an OSI-approved open-source license. Personal-use permissions and separate commercial-use requirements are described in [LICENSE](LICENSE). Previously granted GPL-3.0 and third-party rights remain in force; review the license and source-provenance terms before reusing or redistributing code.
+For verified source state, architecture decisions, validation evidence, and the prioritized implementation sequence, see the **[Project Context and Continuation Handoff](docs/PROJECT_HANDOFF.md)**.
