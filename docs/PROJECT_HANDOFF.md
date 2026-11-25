@@ -438,7 +438,7 @@ INSTALLER="$(mktemp)"
 trap 'rm -f "$INSTALLER"; unset GITHUB_TOKEN' EXIT
 curl -fsSL \
   -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-  -H "Accept: application/vnd.github.raw" \
+  -H "Accept: application/vnd.github.raw+json" \
   "https://api.github.com/repos/gitarman94/Euryphos/contents/scripts/install.sh?ref=main" \
   -o "$INSTALLER"
 bash -n "$INSTALLER"
