@@ -1854,28 +1854,55 @@ func (s *Server) removeGroupMember(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deviceDuplicates(w http.ResponseWriter, r *http.Request) {
-	deviceID:=r.PathValue("id")
-	rows,err:=s.db.QueryContext(r.Context(),`SELECT c.id,c.matched_on,c.confidence,c.status,c.candidate_device_id,
-		d.database_id,d.hostname,d.serial_number,d.smbios_uuid
-		FROM device_duplicate_candidates c JOIN devices d ON d.id=c.candidate_device_id
-		WHERE c.device_id=? ORDER BY c.id DESC`,deviceID)
-	if err!=nil { write(w,http.StatusInternalServerError,response{"error":"duplicate_read_failed"});return }
-	defer rows.Close()
-	items:=[]map[string]any{}
-	for rows.Next() {
-		var candidateID,deviceID string
-		var id,databaseID int64
-		var matchedOn,confidence,status,hostname,serial,uuidValue string
-		if err:=rows.Scan(&id,&matchedOn,&confidence,&status,&deviceID,&databaseID,&hostname,&serial,&uuidValue);err!=nil {
-			write(w,http.StatusInternalServerError,response{"error":"duplicate_read_failed"});return
-		}
-		candidateID=deviceID
-		items=append(items,map[string]any{"id":id,"device_id":candidateID,"database_id":databaseID,
-			"hostname":hostname,"serial_number":serial,"smbios_uuid":uuidValue,"matched_on":matchedOn,
-			"confidence":confidence,"status":status})
+	currentID := r.PathValue("id")
+	rows, err := s.db.QueryContext(r.Context(), `SELECT c.id,c.matched_on,c.confidence,c.status,
+		c.device_id,c.candidate_device_id,
+		source.database_id,source.hostname,source.serial_number,source.smbios_uuid,source.status,
+		candidate.database_id,candidate.hostname,candidate.serial_number,candidate.smbios_uuid,candidate.status
+		FROM device_duplicate_candidates c
+		JOIN devices source ON source.id=c.device_id
+		JOIN devices candidate ON candidate.id=c.candidate_device_id
+		WHERE c.device_id=? OR c.candidate_device_id=?
+		ORDER BY c.id DESC`, currentID, currentID)
+	if err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "duplicate_read_failed"})
+		return
 	}
-	if err:=rows.Err();err!=nil { write(w,http.StatusInternalServerError,response{"error":"duplicate_read_failed"});return }
-	write(w,http.StatusOK,response{"items":items,"count":len(items)})
+	defer rows.Close()
+	items := []map[string]any{}
+	for rows.Next() {
+		var candidateID, sourceID, matchedOn, confidence, pairStatus string
+		var sourceHostname, sourceSerial, sourceUUID, sourceStatus string
+		var targetHostname, targetSerial, targetUUID, targetStatus string
+		var id, sourceDatabaseID, targetDatabaseID int64
+		if err := rows.Scan(&id,&matchedOn,&confidence,&pairStatus,&sourceID,&candidateID,
+			&sourceDatabaseID,&sourceHostname,&sourceSerial,&sourceUUID,&sourceStatus,
+			&targetDatabaseID,&targetHostname,&targetSerial,&targetUUID,&targetStatus); err != nil {
+			write(w, http.StatusInternalServerError, response{"error": "duplicate_read_failed"})
+			return
+		}
+		otherID, otherDatabaseID := sourceID, sourceDatabaseID
+		otherHostname, otherSerial, otherUUID := sourceHostname, sourceSerial, sourceUUID
+		mergeSource, mergeCanonical, canonicalStatus := sourceID, currentID, targetStatus
+		if currentID == sourceID {
+			otherID, otherDatabaseID = candidateID, targetDatabaseID
+			otherHostname, otherSerial, otherUUID = targetHostname, targetSerial, targetUUID
+			mergeSource, mergeCanonical, canonicalStatus = currentID, candidateID, targetStatus
+		}
+		mergeAllowed := canonicalStatus == "approved" && sourceStatus != "merged" && targetStatus != "merged"
+		items = append(items, map[string]any{
+			"id":id,"device_id":otherID,"database_id":otherDatabaseID,
+			"hostname":otherHostname,"serial_number":otherSerial,"smbios_uuid":otherUUID,
+			"matched_on":matchedOn,"confidence":confidence,"status":pairStatus,
+			"source_device_id":sourceID,"candidate_device_id":candidateID,
+			"merge_source_id":mergeSource,"merge_canonical_id":mergeCanonical,"merge_allowed":mergeAllowed,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "duplicate_read_failed"})
+		return
+	}
+	write(w, http.StatusOK, response{"items": items, "count": len(items)})
 }
 
 func mergeTypedDeviceFields(ctx context.Context, tx *sql.Tx, sourceID, canonicalID string) error {
