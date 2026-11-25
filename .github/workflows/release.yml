@@ -1,0 +1,56 @@
+name: Server release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Validate source
+        run: |
+          go mod tidy
+          go test ./...
+          go vet ./...
+
+      - name: Build Linux server archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            stage="$(mktemp -d)"
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags="-s -w" -o "$stage/euryphos-server" ./cmd/euryphos-server
+            install -m 0644 deploy/euryphos.service "$stage/euryphos.service"
+            install -m 0644 LICENSE "$stage/LICENSE"
+            printf '%s\n' "$GITHUB_REF_NAME" > "$stage/VERSION"
+            tar -C "$stage" -czf "dist/euryphos-linux-${arch}.tar.gz" .
+            rm -rf "$stage"
+          done
+          (cd dist && sha256sum euryphos-linux-*.tar.gz > SHA256SUMS)
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/euryphos-linux-amd64.tar.gz \
+            dist/euryphos-linux-arm64.tar.gz \
+            dist/SHA256SUMS \
+            --title "Euryphos $GITHUB_REF_NAME" \
+            --generate-notes
