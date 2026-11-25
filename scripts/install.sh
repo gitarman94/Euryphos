@@ -14,7 +14,7 @@ DATA_DIR="/var/lib/euryphos"
 BACKUP_DIR="${DATA_DIR}/backups"
 SERVICE="euryphos.service"
 MODE="${1:-install}"
-INSTALLER_REVISION="2026-11-25.5"
+INSTALLER_REVISION="2026-11-25.6"
 
 log() { printf '[euryphos] %s\n' "$*"; }
 die() { printf '[euryphos] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -206,8 +206,60 @@ show_web_access() {
   ui_warn "Do not expose the raw HTTP listener on port ${port} directly to the public internet."
 }
 
-[[ "$MODE" == "install" || "$MODE" == "upgrade" ]] || die "Usage: install.sh [install|upgrade]"
+case "$MODE" in
+  install|upgrade)
+    [[ "$#" -eq 1 ]] || die "Usage: install.sh [install|upgrade]"
+    ;;
+  uninstall)
+    [[ "$#" -le 2 && ( "${2:-}" == "" || "${2:-}" == "--purge" ) ]] || die "Usage: install.sh uninstall [--purge]"
+    ;;
+  reinstall)
+    [[ "$#" -eq 2 && "${2:-}" == "--purge" ]] || die "Usage: install.sh reinstall --purge (destructive; requires confirmation)"
+    ;;
+  *)
+    die "Usage: install.sh [install|upgrade|uninstall [--purge]|reinstall --purge]"
+    ;;
+esac
 log "Installer revision ${INSTALLER_REVISION}."
+
+confirm_data_purge() {
+  local answer
+  [[ -r /dev/tty && -w /dev/tty ]] || die "Destructive purge requires an interactive terminal."
+  printf '\n[euryphos] DESTRUCTIVE ACTION: this removes the server, configuration, administrator/enrollment tokens, SQLite database, and database backups.\n' > /dev/tty
+  printf '[euryphos] Type DELETE EURYPHOS DATA to continue: ' > /dev/tty
+  read -r answer < /dev/tty || answer=""
+  [[ "$answer" == "DELETE EURYPHOS DATA" ]] || die "Purge cancelled; no Euryphos data was removed."
+}
+
+remove_installation() {
+  local purge="${1:-0}"
+  ui_section "Removing Euryphos server"
+  if systemctl is-active --quiet "$SERVICE" 2>/dev/null; then
+    log "Stopping ${SERVICE}."
+    systemctl stop "$SERVICE" || die "Could not stop ${SERVICE}; nothing was deleted."
+  fi
+  systemctl disable "$SERVICE" >/dev/null 2>&1 || true
+  rm -f -- "/etc/systemd/system/${SERVICE}"
+  systemctl daemon-reload || die "systemd could not reload after removing the Euryphos unit."
+  systemctl reset-failed "$SERVICE" >/dev/null 2>&1 || true
+  rm -rf -- "$INSTALL_ROOT"
+  if [[ "$purge" == "1" ]]; then
+    log "Removing Euryphos configuration, SQLite database, backups, and service account."
+    rm -rf -- "$CONFIG_DIR" "$DATA_DIR"
+    if getent passwd euryphos >/dev/null 2>&1; then
+      userdel euryphos || die "Could not remove the euryphos service account."
+    fi
+    if getent group euryphos >/dev/null 2>&1; then
+      groupdel euryphos || die "Could not remove the euryphos service group."
+    fi
+    ui_ok "Euryphos and all local data have been removed."
+  else
+    ui_ok "Euryphos binaries and systemd service have been removed."
+    ui_warn "Configuration, tokens, SQLite database, backups, and the euryphos service account were preserved."
+    printf '  Preserved configuration: %s\n  Preserved data:          %s\n' "$CONFIG_DIR" "$DATA_DIR"
+  fi
+}
+
 
 [[ "${EUID}" -eq 0 ]] || die "Run as root inside the Debian 13 Proxmox CT."
 [[ -r /etc/os-release ]] || die "Cannot identify the operating system."
@@ -216,7 +268,26 @@ log "Installer revision ${INSTALLER_REVISION}."
 [[ -d /run/systemd/system ]] || die "systemd is not running. Enable systemd in the Proxmox CT before installing."
 
 ui_header
-log "Mode: ${MODE}"
+log "Requested action: ${MODE}"
+
+if [[ "$MODE" == "uninstall" ]]; then
+  if [[ "${2:-}" == "--purge" ]]; then
+    confirm_data_purge
+    remove_installation 1
+  else
+    remove_installation 0
+  fi
+  exit 0
+fi
+
+if [[ "$MODE" == "reinstall" ]]; then
+  confirm_data_purge
+  remove_installation 1
+  MODE="install"
+  ui_warn "Starting a clean installation with a new database and newly generated credentials."
+fi
+
+log "Install mode: ${MODE}"
 preflight_resources
 
 ui_section "2/6  Install operating-system dependencies"
