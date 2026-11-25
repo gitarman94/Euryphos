@@ -216,12 +216,6 @@ func migrate(ctx context.Context, db *sql.DB) error {
 			last_inventory_at TEXT,
 			created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
-		`CREATE TABLE IF NOT EXISTS device_aliases (
-			old_device_id TEXT PRIMARY KEY,
-			canonical_device_id TEXT NOT NULL REFERENCES devices(id),
-			token_hash TEXT NOT NULL,
-			created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-		)`,
 		`CREATE TABLE IF NOT EXISTS device_duplicate_candidates (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			device_id TEXT NOT NULL REFERENCES devices(id),
