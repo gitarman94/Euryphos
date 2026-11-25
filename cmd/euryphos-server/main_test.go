@@ -793,7 +793,7 @@ func TestDynamicGroupUpdateAndGroupTargetedJobs(t *testing.T) {
 		t.Fatalf("group job did not expand to exactly one approved device: %s (%v)", jobRaw, err)
 	}
 	jobList := performRequest(t, handler, http.MethodGet, "/api/v1/jobs?page=1&page_size=10", "admin-test-token", "", http.StatusOK)
-	if !strings.Contains(string(jobList), job.ID) || !strings.Contains(string(jobList), `"target_count":1`) || !strings.Contains(string(jobList), `"pending":1`) {
+	if !strings.Contains(string(jobList), job.ID) || !strings.Contains(string(jobList), `"target_count":1`) || !strings.Contains(string(jobList), `"pending":1`) || !strings.Contains(string(jobList), `"last_updated_at":`) {
 		t.Fatalf("paginated job listing did not expose target state: %s", jobList)
 	}
 	performRequest(t, handler, http.MethodGet, "/api/v1/jobs?page_size=201", "admin-test-token", "", http.StatusBadRequest)
@@ -806,7 +806,7 @@ func TestDynamicGroupUpdateAndGroupTargetedJobs(t *testing.T) {
 	performRequest(t, handler, http.MethodDelete, groupPath, "admin-test-token", "", http.StatusOK)
 
 	jobDetail := performRequest(t, handler, http.MethodGet, "/api/v1/jobs/"+job.ID, "admin-test-token", "", http.StatusOK)
-	if !strings.Contains(string(jobDetail), `"name":"Windows Servers"`) || !strings.Contains(string(jobDetail), "windows-1") {
+	if !strings.Contains(string(jobDetail), `"name":"Windows Servers"`) || !strings.Contains(string(jobDetail), "windows-1") || !strings.Contains(string(jobDetail), `"updated_at":`) {
 		t.Fatalf("job history did not retain group name and expanded target after deletion: %s", jobDetail)
 	}
 	var groupAudit, jobGroupSnapshot int
