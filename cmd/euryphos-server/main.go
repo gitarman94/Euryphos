@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -672,6 +673,271 @@ func (s *Server) inventory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	write(w, http.StatusAccepted, response{"status": "accepted"})
+}
+
+type groupRule struct {
+	Field    string `json:"field"`
+	Operator string `json:"operator"`
+	Value    string `json:"value"`
+}
+
+type deviceQuery interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func mapValue(value any) map[string]any {
+	result, _ := value.(map[string]any)
+	if result == nil { return map[string]any{} }
+	return result
+}
+
+func textValue(value any) string {
+	if value == nil { return "" }
+	return strings.TrimSpace(fmt.Sprint(value))
+}
+
+func integerValue(value any) any {
+	switch number := value.(type) {
+	case float64:
+		if number < 0 || number > 9.22e18 { return nil }
+		return int64(number)
+	case int:
+		return int64(number)
+	case int64:
+		return number
+	case json.Number:
+		result, err := number.Int64()
+		if err == nil { return result }
+	}
+	return nil
+}
+
+func (s *Server) applySystemInventory(ctx context.Context, tx *sql.Tx, deviceID string, payload []byte, observedAt string) error {
+	var data map[string]any
+	if err := json.Unmarshal(payload, &data); err != nil { return err }
+	hardware := mapValue(data["hardware"])
+	memory := mapValue(data["memory"])
+	root := mapValue(data["root_filesystem"])
+	fields := []any{
+		textValue(data["hostname"]), textValue(data["fqdn"]),
+		textValue(data["os_family"]), textValue(data["os_version"]),
+		textValue(data["architecture"]), textValue(data["os_build"]),
+		textValue(data["os_install_date"]), textValue(data["os_distribution"]),
+		textValue(data["os_distribution_version"]), textValue(data["kernel_version"]),
+		textValue(data["directory_type"]), textValue(data["directory_domain"]),
+		textValue(data["organizational_unit"]), textValue(data["directory_site"]),
+		textValue(hardware["manufacturer"]), textValue(hardware["model"]),
+		textValue(hardware["serial_number"]), strings.ToLower(textValue(hardware["smbios_uuid"])),
+		textValue(hardware["chassis_type"]), textValue(hardware["cpu_model"]),
+		textValue(hardware["cpu_vendor"]), textValue(data["architecture"]),
+		integerValue(hardware["physical_cores"]), integerValue(hardware["logical_processors"]),
+		integerValue(memory["total_bytes"]), textValue(hardware["bios_version"]),
+		textValue(hardware["bios_release_date"]), integerValue(root["total_bytes"]),
+		integerValue(root["free_bytes"]), integerValue(root["available_bytes"]),
+		textValue(data["last_boot"]), data["uptime_seconds"], textValue(data["timezone"]),
+		textValue(data["agent_version"]), observedAt,
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE devices SET
+		hostname=COALESCE(NULLIF(?,''),hostname), fqdn=COALESCE(NULLIF(?,''),fqdn),
+		os_family=COALESCE(NULLIF(?,''),os_family), os_version=COALESCE(NULLIF(?,''),os_version),
+		os_architecture=COALESCE(NULLIF(?,''),os_architecture), os_build=COALESCE(NULLIF(?,''),os_build),
+		os_install_date=COALESCE(NULLIF(?,''),os_install_date),
+		os_distribution=COALESCE(NULLIF(?,''),os_distribution),
+		os_distribution_version=COALESCE(NULLIF(?,''),os_distribution_version),
+		kernel_version=COALESCE(NULLIF(?,''),kernel_version),
+		directory_type=COALESCE(NULLIF(?,''),directory_type),
+		directory_domain=COALESCE(NULLIF(?,''),directory_domain),
+		organizational_unit=COALESCE(NULLIF(?,''),organizational_unit),
+		directory_site=COALESCE(NULLIF(?,''),directory_site),
+		manufacturer=COALESCE(NULLIF(?,''),manufacturer), model=COALESCE(NULLIF(?,''),model),
+		serial_number=COALESCE(NULLIF(?,''),serial_number),
+		smbios_uuid=COALESCE(NULLIF(?,''),smbios_uuid),
+		chassis_type=COALESCE(NULLIF(?,''),chassis_type),
+		cpu_model=COALESCE(NULLIF(?,''),cpu_model), cpu_vendor=COALESCE(NULLIF(?,''),cpu_vendor),
+		cpu_architecture=COALESCE(NULLIF(?,''),cpu_architecture),
+		cpu_physical_cores=COALESCE(?,cpu_physical_cores),
+		cpu_logical_processors=COALESCE(?,cpu_logical_processors),
+		memory_total_bytes=COALESCE(?,memory_total_bytes),
+		bios_version=COALESCE(NULLIF(?,''),bios_version),
+		bios_release_date=COALESCE(NULLIF(?,''),bios_release_date),
+		root_total_bytes=COALESCE(?,root_total_bytes), root_free_bytes=COALESCE(?,root_free_bytes),
+		root_available_bytes=COALESCE(?,root_available_bytes),
+		last_boot=COALESCE(NULLIF(?,''),last_boot), uptime_seconds=COALESCE(?,uptime_seconds),
+		timezone=COALESCE(NULLIF(?,''),timezone), agent_version=COALESCE(NULLIF(?,''),agent_version),
+		last_inventory_at=? WHERE id=?`, append(fields, deviceID)...)
+	if err != nil { return err }
+	return s.recordDuplicateCandidates(ctx, tx, deviceID)
+}
+
+func (s *Server) applyNetworkInventory(ctx context.Context, tx *sql.Tx, deviceID string, payload []byte, observedAt string) error {
+	var data map[string]any
+	if err := json.Unmarshal(payload, &data); err != nil { return err }
+	dnsRaw, _ := json.Marshal(data["dns_servers"])
+	dns := string(dnsRaw)
+	if data["dns_servers"] == nil { dns = "[]" }
+	if _, err := tx.ExecContext(ctx, "DELETE FROM device_network_interfaces WHERE device_id=?", deviceID); err != nil { return err }
+	interfaces, _ := data["interfaces"].([]any)
+	localIP, macAddress, connectionType := "", "", ""
+	for index, raw := range interfaces {
+		item := mapValue(raw)
+		name := textValue(item["name"])
+		key := textValue(item["index"])
+		if key == "" { key = name }
+		if key == "" { key = strconv.Itoa(index) }
+		addresses := item["addresses"]
+		addressJSON, _ := json.Marshal(addresses)
+		mtu := integerValue(item["mtu"])
+		if _, err := tx.ExecContext(ctx, `INSERT INTO device_network_interfaces(
+			device_id,interface_key,name,mac_address,connection_type,state,addresses_json,mtu,observed_at
+		) VALUES (?,?,?,?,?,?,?,?,?)`, deviceID,key,name,textValue(item["mac_address"]),
+			textValue(item["connection_type"]),textValue(item["status"]),string(addressJSON),mtu,observedAt); err != nil { return err }
+		if macAddress == "" && textValue(item["mac_address"]) != "" { macAddress = textValue(item["mac_address"]) }
+		if connectionType == "" && textValue(item["status"]) == "up" { connectionType = textValue(item["connection_type"]) }
+		if localIP == "" {
+			if addrList, ok := addresses.([]any); ok {
+				for _, candidate := range addrList {
+					value := strings.Split(textValue(candidate), "/")[0]
+					ip := net.ParseIP(value)
+					if ip != nil && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() {
+						localIP = value
+						break
+					}
+				}
+			}
+		}
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE devices SET local_ip=COALESCE(NULLIF(?,''),local_ip),
+		mac_address=COALESCE(NULLIF(?,''),mac_address),
+		default_gateway=COALESCE(NULLIF(?,''),default_gateway),
+		dns_servers_json=?, connection_type=COALESCE(NULLIF(?,''),connection_type),
+		last_inventory_at=? WHERE id=?`,
+		localIP, macAddress, textValue(data["default_gateway"]), dns, connectionType, observedAt, deviceID)
+	return err
+}
+
+func (s *Server) applySoftwareInventory(ctx context.Context, tx *sql.Tx, deviceID string, payload []byte, observedAt string) error {
+	var items []map[string]any
+	if err := json.Unmarshal(payload, &items); err != nil { return err }
+	if len(items) > 100000 { return errors.New("software inventory exceeds 100000 records") }
+	if _, err := tx.ExecContext(ctx, "DELETE FROM installed_software WHERE device_id=?", deviceID); err != nil { return err }
+	statement, err := tx.PrepareContext(ctx, `INSERT INTO installed_software(
+		device_id,name,name_normalized,version,publisher,package_manager,first_seen_at,last_seen_at
+	) VALUES (?,?,?,?,?,?,?,?)`)
+	if err != nil { return err }
+	defer statement.Close()
+	for _, item := range items {
+		name := textValue(item["name"])
+		if name == "" { continue }
+		version := textValue(item["version"])
+		if _, err := statement.ExecContext(ctx, deviceID, name, strings.ToLower(name), version,
+			textValue(item["publisher"]), textValue(item["package_manager"]), observedAt, observedAt); err != nil { return err }
+	}
+	_, err = tx.ExecContext(ctx, "UPDATE devices SET last_inventory_at=? WHERE id=?", observedAt, deviceID)
+	return err
+}
+
+func normalizeIdentity(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return strings.NewReplacer("-", "", "{", "", "}", "", " ", "").Replace(value)
+}
+
+func (s *Server) recordDuplicateCandidates(ctx context.Context, tx *sql.Tx, deviceID string) error {
+	var serial, uuidValue, manufacturer, model string
+	if err := tx.QueryRowContext(ctx, "SELECT serial_number,smbios_uuid,manufacturer,model FROM devices WHERE id=?", deviceID).
+		Scan(&serial,&uuidValue,&manufacturer,&model); err != nil { return err }
+	serial, uuidValue = strings.ToLower(strings.TrimSpace(serial)), normalizeIdentity(uuidValue)
+	manufacturer, model = strings.ToLower(strings.TrimSpace(manufacturer)), strings.ToLower(strings.TrimSpace(model))
+	if uuidValue == "" && (serial == "" || manufacturer == "" || model == "") { return nil }
+	_, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO device_duplicate_candidates(device_id,candidate_device_id,matched_on,confidence)
+		SELECT ?,id,
+		CASE WHEN ?<>'' AND lower(replace(replace(replace(smbios_uuid,'-',''),'{',''),'}',''))=? THEN 'smbios_uuid'
+		ELSE 'serial_manufacturer_model' END,
+		'high'
+		FROM devices
+		WHERE id<>? AND merged_into IS NULL AND status<>'merged'
+		AND ((?<>'' AND lower(replace(replace(replace(smbios_uuid,'-',''),'{',''),'}',''))=?)
+		OR (?<>'' AND ?<>'' AND ?<>'' AND lower(serial_number)=? AND lower(manufacturer)=? AND lower(model)=?))`,
+		deviceID,uuidValue,uuidValue,deviceID,uuidValue,uuidValue,serial,manufacturer,model,serial,manufacturer,model)
+	return err
+}
+
+var groupFields = map[string]bool{
+	"hostname":true,"fqdn":true,"os_family":true,"os_version":true,"os_distribution":true,
+	"os_distribution_version":true,"os_architecture":true,"directory_type":true,
+	"directory_domain":true,"organizational_unit":true,"directory_site":true,
+	"manufacturer":true,"model":true,"serial_number":true,"chassis_type":true,
+	"agent_version":true,"timezone":true,"cpu_model":true,"cpu_vendor":true,
+}
+
+func validGroupRules(rules []groupRule) bool {
+	if len(rules)==0 || len(rules)>20 { return false }
+	for _, rule := range rules {
+		if !groupFields[rule.Field] || rule.Value=="" { return false }
+		switch rule.Operator { case "eq","ne","contains","starts_with","ends_with": default: return false }
+	}
+	return true
+}
+
+func ruleMatches(fields map[string]string, rule groupRule) bool {
+	actual := strings.ToLower(fields[rule.Field])
+	expected := strings.ToLower(rule.Value)
+	switch rule.Operator {
+	case "eq": return actual==expected
+	case "ne": return actual!=expected
+	case "contains": return strings.Contains(actual,expected)
+	case "starts_with": return strings.HasPrefix(actual,expected)
+	case "ends_with": return strings.HasSuffix(actual,expected)
+	default: return false
+	}
+}
+
+func (s *Server) refreshDynamicMemberships(ctx context.Context, tx *sql.Tx, deviceID string) error {
+	rows, err := tx.QueryContext(ctx, "SELECT id,match_operator,rules_json FROM machine_groups WHERE group_type='dynamic'")
+	if err != nil { return err }
+	type group struct { id int64; operator string; rules []groupRule }
+	groups := []group{}
+	for rows.Next() {
+		var item group; var raw string
+		if err := rows.Scan(&item.id,&item.operator,&raw); err != nil { rows.Close(); return err }
+		if err := json.Unmarshal([]byte(raw),&item.rules); err != nil { rows.Close(); return err }
+		groups=append(groups,item)
+	}
+	if err := rows.Err(); err != nil { rows.Close(); return err }
+	if err := rows.Close(); err != nil { return err }
+	fields := map[string]string{}
+	fieldNames := make([]string,0,len(groupFields))
+	for name := range groupFields { fieldNames=append(fieldNames,name) }
+	sort.Strings(fieldNames)
+	columns := strings.Join(fieldNames,",")
+	values := make([]any,len(fieldNames))
+	scan := make([]any,len(fieldNames))
+	for i := range values { scan[i]=&values[i] }
+	if err := tx.QueryRowContext(ctx,"SELECT "+columns+" FROM devices WHERE id=?",deviceID).Scan(scan...); err != nil { return err }
+	for i,name := range fieldNames {
+		if values[i]!=nil { fields[name]=fmt.Sprint(values[i]) }
+	}
+	for _, item := range groups {
+		matched := item.operator=="all"
+		for _, rule := range item.rules {
+			result := ruleMatches(fields,rule)
+			if item.operator=="all" && !result { matched=false; break }
+			if item.operator=="any" && result { matched=true; break }
+		}
+		if matched {
+			_,err=tx.ExecContext(ctx,"INSERT OR IGNORE INTO device_group_memberships(group_id,device_id,added_by) VALUES (?,?,?)",item.id,deviceID,"dynamic")
+		} else {
+			_,err=tx.ExecContext(ctx,"DELETE FROM device_group_memberships WHERE group_id=? AND device_id=?",item.id,deviceID)
+		}
+		if err!=nil { return err }
+	}
+	return nil
+}
+
+func (s *Server) recordDuplicateCandidatesAndRefresh(ctx context.Context, tx *sql.Tx, deviceID string) error {
+	if err := s.recordDuplicateCandidates(ctx,tx,deviceID); err != nil { return err }
+	return s.refreshDynamicMemberships(ctx,tx,deviceID)
 }
 
 func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
