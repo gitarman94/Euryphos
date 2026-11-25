@@ -56,7 +56,7 @@ This repository currently includes:
 - Device authentication, heartbeat, and categorized inventory ingestion.
 - Administrator device listing with bounded search/filter/sort/pagination, typed device detail, inventory history, job creation, and job status retrieval.
 - A SQLite `devices` row per computer with a database-generated integer `database_id` plus the stable agent-facing UUID `id`; frequently queried identity, OS, directory, hardware, CPU, memory, storage, network summary, and agent fields are stored in typed columns.
-- Normalized child rows for network interfaces and installed software; current category payloads plus change-only inventory history.
+- Normalized child rows for network interfaces and installed software; current category payloads plus change history for relevant facts. System history ignores volatile readings (uptime, free/available memory and disk space, battery charge/status); the latest device row still refreshes those values. This is not a metrics time-series store.
 - Strong duplicate candidate detection (SMBIOS UUID, or serial + manufacturer + model), reviewable candidates, explicit merge, and continued authentication using the merged endpoint's existing token.
 - Initial `audit_log` events for authentication outcomes, enrollment/approval/revocation, group changes, job actions/results, and duplicate merges.
 - Static and rule-based dynamic machine groups using normalized Windows AD and Linux directory attributes.
