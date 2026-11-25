@@ -88,6 +88,7 @@ func routes(s *Server) http.Handler {
 	mux.HandleFunc("GET /login", s.loginPage)
 	mux.HandleFunc("GET /console", s.admin(s.consolePage))
 	mux.HandleFunc("GET /console/", s.admin(s.consolePage))
+	mux.HandleFunc("GET /assets/login.js", s.loginJS)
 	mux.HandleFunc("GET /assets/app.js", s.consoleJS)
 	mux.HandleFunc("GET /assets/app.css", s.consoleCSS)
 	mux.HandleFunc("POST /api/v1/auth/session", s.authSession)
