@@ -349,6 +349,8 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		name string
 		definition string
 	}{
+		{name: "first_connected_at", definition: "TEXT"},
+		{name: "last_connected_at", definition: "TEXT"},
 		{name: "database_id", definition: "INTEGER"},
 		{name: "fqdn", definition: "TEXT NOT NULL DEFAULT ''"},
 		{name: "os_distribution", definition: "TEXT NOT NULL DEFAULT ''"},
