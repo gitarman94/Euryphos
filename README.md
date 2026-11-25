@@ -72,19 +72,52 @@ curl --fail http://127.0.0.1:8080/api/health
 
 This is a development procedure, not a production install. Do not expose an unencrypted development listener to untrusted networks.
 
-### Docker Compose
+## Debian 13 Proxmox CT installation and upgrade
+
+The server runs directly as a Go binary under **systemd inside a Debian 13 Proxmox LXC container**. It does not require Docker, Docker Compose, PostgreSQL, or a separate database service. SQLite lives on the CT's persistent filesystem at `/var/lib/euryphos/euryphos.db`.
+
+The GitHub repository is currently private. Run the following as root inside the CT. Use a fine-grained GitHub token with **Contents: read** for this repository; the token is requested without echo and is not written to the Euryphos configuration.
+
+First install or upgrade (the command is the same apart from the final argument):
 
 ```bash
-cp .env.example .env
-# Replace both secret placeholders in .env with unique random values.
-docker compose up -d --build
+apt-get update && apt-get install -y ca-certificates curl
+read -rsp "GitHub read-only token: " GITHUB_TOKEN
+printf '\n'
+export GITHUB_TOKEN
+curl -fsSL \
+  -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+  -H "Accept: application/vnd.github.raw" \
+  "https://api.github.com/repos/gitarman94/Euryphos/contents/scripts/install.sh?ref=main" \
+  | GITHUB_TOKEN="${GITHUB_TOKEN}" bash -s -- install
+unset GITHUB_TOKEN
 ```
 
-The SQLite database is persisted in the `euryphos-data` volume. Test backup and restore before relying on it.
+For later upgrades, repeat the command and change the final argument from `install` to `upgrade`. The updater resolves the latest published GitHub release. To pin a version, export `EURYPHOS_VERSION=vX.Y.Z` before running it.
 
-## Deployment direction
+A `v*` Git tag triggers the release workflow. It tests the tagged Go source and publishes Linux amd64 and arm64 archives plus `SHA256SUMS`. The installer checks the archive checksum before installing it. A published release is required; the installer stops without replacing the running application when no matching release or valid asset is available.
 
-The first intended server deployment is a Debian 13 Proxmox LXC container. There is not yet a supported one-command installer, signed release flow, systemd package, or tested in-place upgrade/backup/restore procedure. Do not use legacy CommandPilot/PatchPilot scripts; they target an obsolete implementation.
+The installer:
+- Requires Debian 13, root, and a running systemd manager.
+- Creates the unprivileged `euryphos` service account and installs the systemd unit.
+- Installs the binary under a versioned directory in `/opt/euryphos/releases/` and switches `/opt/euryphos/current` atomically.
+- Creates `/etc/euryphos/euryphos.env` on first install with generated administrator/enrollment secrets. Later upgrades preserve the file unchanged.
+- Keeps the SQLite database under `/var/lib/euryphos/`; upgrades never delete, reset, or replace that live database.
+- Stops the service before making a SQLite backup with the SQLite backup API, verifies the backup with `PRAGMA integrity_check`, then starts the new version.
+- Checks `/api/health`. If the new version fails to start or pass the local health check, it switches back to the previous binary and restores the pre-upgrade database backup.
+- Retains backups in `/var/lib/euryphos/backups/` for manual recovery.
+
+Useful commands:
+
+```bash
+systemctl status euryphos
+journalctl -u euryphos -f
+grep '^EURYPHOS_ADMIN_TOKEN=' /etc/euryphos/euryphos.env
+```
+
+The default listener is `:8080`. Put it behind a trusted HTTPS reverse proxy before exposing it to untrusted networks. `EURYPHOS_COOKIE_SECURE=true` is the installed default; do not disable it for an internet-facing service.
+
+**Deployment qualification is still required:** the installer and release workflow are implemented, but a fresh install, in-place upgrade, forced failed-upgrade rollback, reboot, and database restore must still be exercised in a disposable Debian 13 Proxmox CT. SHA-256 verifies transfer integrity against the GitHub release manifest; cryptographic release signing and provenance verification remain release-gate work.
 
 ## Platform direction
 
