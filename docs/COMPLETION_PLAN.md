@@ -1263,3 +1263,8 @@ Implementation status as of 2026-11-25:
 - **Machine groups:** static groups support direct membership; dynamic groups use allowlisted rules over OS/distribution and common Windows AD/Linux SSSD/realmd directory fields. Rule predicates are parameterized and evaluated in SQLite.
 
 All these workstreams remain subject to the plan's broader release gate: complete platform coverage, authorization review, live server-agent integration, recovery tests, and fleet-scale performance tests.
+
+
+### Inventory history versus live metrics
+
+The current implementation keeps the latest typed values and categorized payload fresh on each inventory upload. Change history stores hardware, identity, OS, directory, network, and software changes; it does not append a full snapshot for normal uptime, available-memory/free-disk, or battery-charge movement. Those live readings are not a chart-ready time series. Dedicated metric sampling, retention, aggregation, and trend APIs remain separate work and should use compact typed samples rather than repeated full inventory payloads.
