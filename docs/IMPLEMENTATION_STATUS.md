@@ -108,7 +108,7 @@ The Devices-list API also accepts `connection_state=online`, `offline`, or `neve
 
 ## Automated validation
 
-GitHub Actions run [45598630499](https://github.com/gitarman94/Euryphos/actions/runs/45598630499), against commit `55aa9307bd9cd2c246b1276a6a5d154ff6be1f6d`, completed successfully on 2026-11-25. `go mod tidy`, `go test ./...`, `go vet ./...`, and `go build -trimpath ./cmd/euryphos-server` all passed.
+GitHub Actions run [45610991148](https://github.com/gitarman94/Euryphos/actions/runs/45610991148), on commit `28abf424cf2124ad57a3cebf8db67491088b8774`, completed successfully on 2026-11-25. `go mod tidy`, `go test ./...`, `go vet ./...`, and `go build -trimpath ./cmd/euryphos-server` all passed.
 
 
 ## Normalized device database and management operations
