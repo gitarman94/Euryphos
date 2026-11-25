@@ -61,7 +61,7 @@ This repository currently includes:
 ### Not implemented or not production-ready
 
 - **No browser web UI is implemented yet:** dashboard, Devices-list, and device-detail pages, frontend templates/assets, and browser login/session workflow remain outstanding.
-- Initial administrator APIs now provide `GET /api/v1/devices/{id}` for current device identity/latest inventory and `GET /api/v1/devices/{id}/inventory/history` for bounded, cursor-paginated inventory snapshots. These APIs do not yet expose every field, activity type, search/filter control, or trend aggregation in the device-management specification.
+- Initial administrator APIs now provide `GET /api/v1/devices/{id}` for current device identity/latest inventory and `GET /api/v1/devices/{id}/inventory/history` for bounded, cursor-paginated inventory snapshots. The Devices-list API also supports basic search, status/OS filters, allowlisted sorting, and bounded pagination. Full field coverage, activity types, fleet-wide trend aggregation, and the browser UI remain incomplete.
 - Full hardware, service, security, and configuration inventory providers.
 - Functional patch installation, software deployment/removal, configuration enforcement, and most privileged job executors.
 - Production server installers, signed release artifacts, and tested upgrade/backup/restore procedures.
