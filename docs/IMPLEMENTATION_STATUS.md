@@ -125,4 +125,4 @@ Implemented in the server's existing Go entry point and SQLite migration path:
 - Directory fields are normalized across platforms: Windows provider reports AD domain and OU where domain services are available; Linux provider reads SSSD/realmd configuration and reports AD/LDAP domain and OU context where exposed.
 - `audit_log` records initial authentication, enrollment, approval/revocation, group mutation, job, and merge events.
 
-Not complete: automatic identity resolution across ambiguous identifiers, manual duplicate review UI, full AD/LDAP discovery/OU resolution across every distro, full RBAC, audit retention/tamper-proofing/export governance, and production load/restore validation.
+Not complete: automatic identity resolution across ambiguous identifiers, advanced duplicate-review workflows and bulk reconciliation, full AD/LDAP discovery/OU resolution across every distro, full RBAC, audit retention/tamper-proofing/export governance, and production load/restore validation.
