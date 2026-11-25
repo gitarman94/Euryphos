@@ -124,12 +124,27 @@ NEW_RELEASE="${RELEASES_DIR}/${VERSION_DIR_NAME}"
 if [[ ! -d "$NEW_RELEASE" ]]; then
   STAGE_DIR="${RELEASES_DIR}/.${VERSION_DIR_NAME}.tmp.$$"
   mkdir -m 0755 "$STAGE_DIR"
-  if ! tar -xzf "${TMP_DIR}/${ARCHIVE}" -C "$STAGE_DIR"; then
+  if ! tar -tzf "${TMP_DIR}/${ARCHIVE}" > "${TMP_DIR}/archive.list"; then
+    rm -rf "$STAGE_DIR"
+    die "Could not read the GitHub release archive."
+  fi
+  if grep -Eq '(^/|(^|/)\.\.(/|$))' "${TMP_DIR}/archive.list"; then
+    rm -rf "$STAGE_DIR"
+    die "Release archive contains an unsafe path."
+  fi
+  for required_file in ./euryphos-server ./euryphos.service ./LICENSE ./VERSION; do
+    grep -Fxq "$required_file" "${TMP_DIR}/archive.list" || {
+      rm -rf "$STAGE_DIR"
+      die "Release archive is missing $required_file."
+    }
+  done
+  if ! tar --no-same-owner --no-same-permissions -xzf "${TMP_DIR}/${ARCHIVE}" -C "$STAGE_DIR"; then
     rm -rf "$STAGE_DIR"
     die "Could not unpack the GitHub release."
   fi
   [[ -x "${STAGE_DIR}/euryphos-server" ]] || { rm -rf "$STAGE_DIR"; die "Release archive is missing euryphos-server."; }
   [[ -f "${STAGE_DIR}/euryphos.service" ]] || { rm -rf "$STAGE_DIR"; die "Release archive is missing euryphos.service."; }
+  [[ "$(cat "${STAGE_DIR}/VERSION")" == "$VERSION" ]] || { rm -rf "$STAGE_DIR"; die "Release archive version does not match the GitHub release tag."; }
   chmod 0755 "${STAGE_DIR}/euryphos-server"
   chown -R root:root "$STAGE_DIR"
   mv "$STAGE_DIR" "$NEW_RELEASE"
