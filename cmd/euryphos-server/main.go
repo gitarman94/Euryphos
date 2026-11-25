@@ -25,6 +25,7 @@ import (
 type Server struct {
 	db                      *sql.DB
 	adminToken, enrollToken string
+	onlineGrace             time.Duration
 }
 
 type response map[string]any
@@ -53,7 +54,15 @@ func main() {
 		}
 	}
 
-	s := &Server{db: db, adminToken: admin, enrollToken: enroll}
+	graceSeconds := 90
+	if raw := os.Getenv("EURYPHOS_ONLINE_GRACE_SECONDS"); raw != "" {
+		parsed, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || parsed < 15 || parsed > 3600 {
+			log.Fatal("EURYPHOS_ONLINE_GRACE_SECONDS must be between 15 and 3600")
+		}
+		graceSeconds = parsed
+	}
+	s := &Server{db: db, adminToken: admin, enrollToken: enroll, onlineGrace: time.Duration(graceSeconds) * time.Second}
 	addr := env("EURYPHOS_LISTEN", ":8080")
 	log.Printf("Euryphos Go server listening on %s (SQLite: %s)", addr, env("EURYPHOS_DB_PATH", "./data/euryphos.db"))
 	server := &http.Server{
@@ -155,6 +164,8 @@ func migrate(ctx context.Context, db *sql.DB) error {
 			status TEXT NOT NULL DEFAULT 'pending',
 			token_hash TEXT,
 			last_seen TEXT,
+			first_connected_at TEXT,
+			last_connected_at TEXT,
 			created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE TABLE IF NOT EXISTS device_inventory (
@@ -200,13 +211,55 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_jobs_status_created ON jobs(status, created_at)`,
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (1)`,
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (2)`,
+		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (3)`,
 	}
 	for _, statement := range statements {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
 			return err
 		}
 	}
+	for _, column := range []struct {
+		name string
+		definition string
+	}{
+		{name: "first_connected_at", definition: "TEXT"},
+		{name: "last_connected_at", definition: "TEXT"},
+	} {
+		if err := ensureDeviceColumn(ctx, tx, column.name, column.definition); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
+}
+
+func ensureDeviceColumn(ctx context.Context, tx *sql.Tx, columnName, definition string) error {
+	rows, err := tx.QueryContext(ctx, "PRAGMA table_info(devices)")
+	if err != nil { return err }
+	found := false
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, dataType string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &primaryKey); err != nil { rows.Close(); return err }
+		if name == columnName { found = true }
+	}
+	if err := rows.Err(); err != nil { rows.Close(); return err }
+	if err := rows.Close(); err != nil { return err }
+	if found { return nil }
+	_, err = tx.ExecContext(ctx, "ALTER TABLE devices ADD COLUMN "+columnName+" "+definition)
+	return err
+}
+
+func (s *Server) connectionState(lastSeen sql.NullString) string {
+	if !lastSeen.Valid || lastSeen.String == "" { return "never_connected" }
+	observed, err := time.Parse(time.RFC3339Nano, lastSeen.String)
+	if err != nil { return "unknown" }
+	grace := s.onlineGrace
+	if grace <= 0 { grace = 90 * time.Second }
+	age := time.Since(observed)
+	if age < -30*time.Second { return "unknown" }
+	if age <= grace { return "online" }
+	return "offline"
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
@@ -313,13 +366,16 @@ func (s *Server) heartbeat(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := s.db.ExecContext(r.Context(), `UPDATE devices
 		SET last_seen = ?,
+		    first_connected_at = COALESCE(first_connected_at, ?),
+		    last_connected_at = ?,
 		    hostname = COALESCE(NULLIF(?, ''), hostname),
 		    os_family = COALESCE(NULLIF(?, ''), os_family),
 		    os_version = COALESCE(NULLIF(?, ''), os_version)
 		WHERE id = ?`,
-		time.Now().UTC().Format(time.RFC3339Nano), str(in["hostname"]), str(in["os_family"]), str(in["os_version"]), r.PathValue("id"))
+		now, now, now, str(in["hostname"]), str(in["os_family"]), str(in["os_version"]), r.PathValue("id"))
 	if err != nil {
 		write(w, http.StatusInternalServerError, response{"error": "database_error"})
 		return
@@ -365,7 +421,12 @@ func (s *Server) inventory(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusInternalServerError, response{"error": "inventory_current_write_failed"})
 		return
 	}
-	if _, err := tx.ExecContext(r.Context(), "UPDATE devices SET last_seen = ? WHERE id = ?", time.Now().UTC().Format(time.RFC3339Nano), r.PathValue("id")); err != nil {
+	receivedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := tx.ExecContext(r.Context(), `UPDATE devices
+		SET last_seen = ?,
+		    first_connected_at = COALESCE(first_connected_at, ?),
+		    last_connected_at = ?
+		WHERE id = ?`, receivedAt, receivedAt, receivedAt, r.PathValue("id")); err != nil {
 		write(w, http.StatusInternalServerError, response{"error": "device_last_seen_update_failed"})
 		return
 	}
@@ -460,7 +521,7 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 	}
 	offset := (page - 1) * pageSize
 	queryArgs := append(append([]any{}, args...), pageSize, offset)
-	query := "SELECT id, hostname, os_family, os_version, status, last_seen FROM devices WHERE " +
+	query := "SELECT id, hostname, os_family, os_version, status, last_seen, first_connected_at, last_connected_at FROM devices WHERE " +
 		whereSQL + " ORDER BY " + sortColumn + " " + sortDirection + ", id ASC LIMIT ? OFFSET ?"
 	rows, err := s.db.QueryContext(r.Context(), query, queryArgs...)
 	if err != nil {
@@ -471,14 +532,16 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 	items := []map[string]any{}
 	for rows.Next() {
 		var id, hostname, osFamilyValue, osVersion, deviceStatus string
-		var lastSeen sql.NullString
-		if err := rows.Scan(&id, &hostname, &osFamilyValue, &osVersion, &deviceStatus, &lastSeen); err != nil {
+		var lastSeen, firstConnected, lastConnected sql.NullString
+		if err := rows.Scan(&id, &hostname, &osFamilyValue, &osVersion, &deviceStatus, &lastSeen, &firstConnected, &lastConnected); err != nil {
 			write(w, http.StatusInternalServerError, response{"error": "database_error"})
 			return
 		}
 		items = append(items, map[string]any{
 			"id": id, "hostname": hostname, "os_family": osFamilyValue, "os_version": osVersion,
 			"status": deviceStatus, "last_seen": lastSeen.String,
+			"first_connected_at": firstConnected.String, "last_connected_at": lastConnected.String,
+			"connection_state": s.connectionState(lastSeen),
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -495,10 +558,11 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 // every inventory category. It deliberately omits the device credential hash.
 func (s *Server) deviceDetail(w http.ResponseWriter, r *http.Request) {
 	var id, hostname, osFamily, osVersion, status, createdAt string
-	var lastSeen sql.NullString
+	var lastSeen, firstConnected, lastConnected sql.NullString
 	if err := s.db.QueryRowContext(r.Context(), `SELECT id, hostname, os_family, os_version,
-		status, last_seen, created_at FROM devices WHERE id = ?`, r.PathValue("id")).
-		Scan(&id, &hostname, &osFamily, &osVersion, &status, &lastSeen, &createdAt); err != nil {
+		status, last_seen, first_connected_at, last_connected_at, created_at
+		FROM devices WHERE id = ?`, r.PathValue("id")).
+		Scan(&id, &hostname, &osFamily, &osVersion, &status, &lastSeen, &firstConnected, &lastConnected, &createdAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			write(w, http.StatusNotFound, response{"error": "device_not_found"})
 			return
@@ -535,6 +599,8 @@ func (s *Server) deviceDetail(w http.ResponseWriter, r *http.Request) {
 		"device": map[string]any{
 			"id": id, "hostname": hostname, "os_family": osFamily, "os_version": osVersion,
 			"status": status, "last_seen": lastSeen.String, "created_at": createdAt,
+			"first_connected_at": firstConnected.String, "last_connected_at": lastConnected.String,
+			"connection_state": s.connectionState(lastSeen),
 		},
 		"inventory": inventory,
 	})
