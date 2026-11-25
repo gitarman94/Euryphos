@@ -166,12 +166,17 @@ Never reuse development secrets in production. Do not expose an unencrypted HTTP
 | `POST` | `/api/v1/devices/{id}/heartbeat` | Endpoint heartbeat (device credential) |
 | `POST` | `/api/v1/devices/{id}/inventory` | Submit inventory category (device credential) |
 | `GET` | `/api/v1/devices` | List endpoints (administrator) |
-| `POST` | `/api/v1/jobs` | Create a job for approved endpoints (administrator) |
+| `GET` | `/api/v1/jobs` | List recent jobs with bounded pagination and per-target counters (administrator) |
+| `POST` | `/api/v1/jobs` | Create a job for approved endpoints and/or machine groups (administrator) |
 | `GET` | `/api/v1/devices/{id}/jobs/next` | Claim next queued endpoint job (device credential) |
 | `POST` | `/api/v1/devices/{id}/jobs/{job}/result` | Report job result (device credential) |
-| `GET` | `/api/v1/jobs/{id}` | Retrieve job status (administrator) |
+| `GET` | `/api/v1/jobs/{id}` | Retrieve job status, selected group snapshots, and per-device outcomes (administrator) |
+| `GET` | `/api/v1/groups` | List machine groups (administrator) |
+| `POST` | `/api/v1/groups` | Create a static or dynamic group (administrator) |
+| `PUT` | `/api/v1/groups/{id}` | Update group definition and reevaluate dynamic membership (administrator) |
+| `DELETE` | `/api/v1/groups/{id}` | Delete a group without deleting past job snapshots (administrator) |
 
-The API is an early implementation contract and may change before a stable release. Administrative requests require the configured administrator bearer token; endpoint requests require an approved device token. See [Go architecture](docs/GO_ARCHITECTURE.md).
+The API is an early implementation contract and may change before a stable release. Administrative API calls accept the configured administrator bearer token; browser users sign in at `/login` and use a short-lived server-side session with CSRF protection. Endpoint requests require an approved device token. See [Go architecture](docs/GO_ARCHITECTURE.md).
 
 ## Security and operational notes
 
