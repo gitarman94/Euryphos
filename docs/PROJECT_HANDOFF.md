@@ -241,7 +241,7 @@ The earlier API activity timestamp run **[45630523155](https://github.com/gitarm
 
 ### Agent CI
 
-GitHub Actions run **[45619870545](https://github.com/gitarman94/Euryphos-Agent/actions/runs/45619870545)** on agent commit `56f4271bfca4136ca464e8c7d0c706ed1b42293c` completed successfully on 2026-11-25. It passed agent tests, vet, Linux build, Windows cross-build, and macOS cross-build. These cross-builds do not certify runtime support on those systems.
+GitHub Actions run **[45630111011](https://github.com/gitarman94/Euryphos-Agent/actions/runs/45630111011)** on agent source commit `333e9c8f5c31057d7a31e701daaf3342bfb0dfb3` completed successfully on 2026-11-25. It passed `go test ./...`, `go vet ./...`, Linux build, Windows amd64 cross-build, and macOS arm64 cross-build. This includes claim-aware result reporting, persistent local job journal, pre-execution start acknowledgement, periodic device/job heartbeats, and bounded four-hour-default job timeout (60 seconds–24 hours). Agent documentation synchronization run **[45631447132](https://github.com/gitarman94/Euryphos-Agent/actions/runs/45631447132)** also passed after the overdue-heartbeat contract was documented. Cross-builds do not certify runtime support on those systems.
 
 ### What has not been demonstrated
 
@@ -510,7 +510,7 @@ When continuing this work after chat history loss:
 
 ### Immediate next task
 
-1. Add an operator notification and explicit `stalled/indeterminate` view for running targets whose heartbeat is `overdue`. Preserve the current read-only semantics: the real status remains `running` and no automatic requeue occurs.
+1. Add an operator notification/queue for overdue targets rather than relying only on the Jobs page warning and overdue count. Preserve the current read-only semantics: the real status remains `running` and no automatic requeue occurs.
 2. Implement administrator resolution for overdue/stale claims with confirmation, warnings, audit events, and retry restrictions based on action idempotency. A stale local agent journal returning HTTP 409 must not be silently cleared.
 3. Add protocol tests for heartbeat loss, job deadline, agent crash during execution, server restart, stale claim, and resolution/recovery.
 4. Execute real server + agent tests on disposable Linux and Windows VMs: enrollment, full inventory, safe service control, interruption, lost result response, reconnect, and stale-claim behavior.
