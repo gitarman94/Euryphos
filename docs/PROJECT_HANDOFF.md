@@ -220,7 +220,7 @@ Keep `Euryphos-Agent/docs/PROJECT_HANDOFF.md` synchronized with actual handler b
 
 ### Server CI
 
-GitHub Actions run **[45624241692](https://github.com/gitarman94/Euryphos/actions/runs/45624241692)** on server main HEAD `cfeec4a86490e3b11f86de0d547fec8edb359646` completed successfully on 2026-11-25. It passed:
+GitHub Actions run **[45625382270](https://github.com/gitarman94/Euryphos/actions/runs/45625382270)** on server main HEAD `a9d61eda99eb8e355acc0a0ad2e2534dbee79fb8` completed successfully on 2026-11-25. It passed:
 
 - `go mod tidy`
 - `go test ./...`
@@ -228,7 +228,7 @@ GitHub Actions run **[45624241692](https://github.com/gitarman94/Euryphos/action
 - `bash -n scripts/install.sh`
 - `go build -trimpath ./cmd/euryphos-server`
 
-This includes graceful SIGINT/SIGTERM HTTP shutdown, SQLite close, Debian installer syntax, and the existing SQLite/API regression suite. It does not execute the installer inside Debian 13 or test an actual GitHub release.
+This includes graceful SIGINT/SIGTERM HTTP shutdown, SQLite close, Debian installer syntax and release-archive extraction safeguards, and the existing SQLite/API regression suite. It does not execute the installer inside Debian 13 or execute the tag-triggered release workflow.
 
 ### Agent CI
 
@@ -372,7 +372,7 @@ Store updates per device with source, version, applicability, severity, timestam
 
 **Server first target — implementation started:** the repository now contains a Debian 13-only Proxmox CT installer/updater at `scripts/install.sh`, a systemd unit at `deploy/euryphos.service`, and a tag-triggered release workflow at `.github/workflows/release.yml`. GitHub releases contain static Go server archives for Linux amd64/arm64 and a SHA-256 manifest. Installation creates the `euryphos` unprivileged account, keeps configuration at `/etc/euryphos/euryphos.env`, stores SQLite at `/var/lib/euryphos/euryphos.db`, and runs directly under systemd. Upgrade stages a versioned binary, stops the service, creates and integrity-checks a SQLite backup, atomically switches the binary, and health-checks startup. A failed upgrade restores the previous binary and the pre-upgrade database. The server now handles SIGTERM/SIGINT with graceful HTTP shutdown and closes SQLite before systemd completes stopping it.
 
-**Still required before calling this deployment production-ready:** run the installer script syntax check and release workflow; publish a first tagged release; execute fresh install, repeat install, in-place upgrade with populated device/inventory/group/job/audit data, a deliberately failed upgrade and rollback, reboot/startup, manual backup/restore, and disk-full/backup-failure cases in disposable Debian 13 Proxmox CTs. Confirm credentials and device tokens remain unchanged. Add cryptographic release signing/provenance verification; the initial installer currently validates SHA-256 checksums but does not establish a separate signing trust root. Do not add Docker or Docker Compose deployment files.
+**Still required before calling this deployment production-ready:** publish the first tagged release and execute the tag-triggered release workflow (including archive and checksum verification); then execute fresh install, repeat install, in-place upgrade with populated device/inventory/group/job/audit data, a deliberately failed upgrade and rollback, reboot/startup, manual backup/restore, and disk-full/backup-failure cases in disposable Debian 13 Proxmox CTs. Confirm credentials and device tokens remain unchanged. The installer script syntax passes CI, but the installer has not been run in a Debian 13 CT. Add cryptographic release signing/provenance verification; the installer currently validates SHA-256 checksums against the release manifest but does not establish a separate signing trust root. Do not add Docker or Docker Compose deployment files.
 
 **Linux agent:** signed immutable Go releases and checksum manifest; client-only installers/service lifecycle for Arch/CachyOS, Debian/Ubuntu/Mint/LMDE, Fedora/Nobara, and a separate image-aware Bazzite/rpm-ostree approach. Preserve config/credentials on upgrade; support repair/uninstall/rollback.
 
