@@ -38,6 +38,8 @@ A workstream is complete only when:
 
 ## Device inventory and management UI scope (required specification)
 
+**Additional backend implementation status (2026-11-25):** static and dynamic groups support create, edit, delete, and membership listing/management. Jobs can target explicit devices and/or groups; membership is expanded transactionally into an approved-device snapshot, overlapping selections are deduplicated, and job history retains selected group IDs/names even after group deletion. Dynamic group definitions can be updated without changing group type. The browser Groups/Devices UI, user-scoped authorization, saved-query targeting, and production job execution remain open.
+
 The full field catalog, privacy model, API requirements, and acceptance criteria are maintained in [`docs/DEVICE_MANAGEMENT_UI_SPEC.md`](DEVICE_MANAGEMENT_UI_SPEC.md). The separate endpoint collection contract is in the Euryphos-Agent repository at [`docs/TELEMETRY_COLLECTION_SPEC.md`](https://github.com/gitarman94/Euryphos-Agent/blob/main/docs/TELEMETRY_COLLECTION_SPEC.md).
 
 Implementation tasks (status as of 2026-11-25; all remain open until their full acceptance criteria pass):
