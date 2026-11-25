@@ -15,12 +15,14 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"syscall"
 
 	_ "modernc.org/sqlite"
 )
@@ -35,26 +37,32 @@ type Server struct {
 type response map[string]any
 
 func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
 	admin := os.Getenv("EURYPHOS_ADMIN_TOKEN")
 	enroll := os.Getenv("EURYPHOS_ENROLLMENT_TOKEN")
 	if admin == "" || enroll == "" {
-		log.Fatal("EURYPHOS_ADMIN_TOKEN and EURYPHOS_ENROLLMENT_TOKEN are required")
+		return errors.New("EURYPHOS_ADMIN_TOKEN and EURYPHOS_ENROLLMENT_TOKEN are required")
 	}
 
 	db, err := openDatabase(env("EURYPHOS_DB_PATH", "./data/euryphos.db"))
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	defer db.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
-		log.Fatal(err)
+		return err
 	}
 	if env("EURYPHOS_AUTO_MIGRATE", "true") == "true" {
 		if err := migrate(ctx, db); err != nil {
-			log.Fatal("SQLite migration failed: ", err)
+			return fmt.Errorf("SQLite schema initialization/upgrade failed: %w", err)
 		}
 	}
 
@@ -62,7 +70,7 @@ func main() {
 	if raw := os.Getenv("EURYPHOS_ONLINE_GRACE_SECONDS"); raw != "" {
 		parsed, parseErr := strconv.Atoi(raw)
 		if parseErr != nil || parsed < 15 || parsed > 3600 {
-			log.Fatal("EURYPHOS_ONLINE_GRACE_SECONDS must be between 15 and 3600")
+			return errors.New("EURYPHOS_ONLINE_GRACE_SECONDS must be between 15 and 3600")
 		}
 		graceSeconds = parsed
 	}
@@ -78,7 +86,35 @@ func main() {
 		WriteTimeout:      60 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
-	log.Fatal(server.ListenAndServe())
+
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	serverErrors := make(chan error, 1)
+	go func() {
+		serverErrors <- server.ListenAndServe()
+	}()
+
+	select {
+	case serveErr := <-serverErrors:
+		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+			return serveErr
+		}
+	case sig := <-signals:
+		log.Printf("Received %s; gracefully shutting down HTTP server", sig)
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer shutdownCancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			_ = server.Close()
+			return fmt.Errorf("graceful HTTP shutdown: %w", err)
+		}
+		if serveErr := <-serverErrors; serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+			return serveErr
+		}
+	}
+
+	log.Printf("Euryphos server stopped; SQLite connection pool will close cleanly")
+	return nil
 }
 
 func routes(s *Server) http.Handler {
