@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -679,6 +681,23 @@ func TestDuplicateIdentityQueriesUseIndexes(t *testing.T) {
 		"serial-1","vendor","model")
 	if !strings.Contains(serialPlan,"idx_devices_hardware_identity") {
 		t.Fatalf("serial/manufacturer/model duplicate lookup is not using its composite expression index: %s",serialPlan)
+	}
+}
+
+func TestEmbeddedBrowserScriptsHaveValidSyntax(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("Node.js is not installed; browser script syntax check is optional locally")
+	}
+	for name, script := range map[string]string{"console": consoleJS, "login": loginJS} {
+		path := filepath.Join(t.TempDir(), name+".js")
+		if err := os.WriteFile(path, []byte(script), 0600); err != nil {
+			t.Fatalf("write %s browser script: %v", name, err)
+		}
+		output, err := exec.Command(node, "--check", path).CombinedOutput()
+		if err != nil {
+			t.Fatalf("%s browser script has invalid JavaScript syntax: %v\n%s", name, err, output)
+		}
 	}
 }
 
