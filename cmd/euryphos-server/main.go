@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -79,9 +80,13 @@ func main() {
 func routes(s *Server) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.health)
+	mux.HandleFunc("POST /api/v1/auth/session", s.authSession)
+	mux.HandleFunc("GET /api/v1/audit", s.admin(s.auditList))
 	mux.HandleFunc("POST /api/v1/enrollment", s.enroll)
 	mux.HandleFunc("POST /api/v1/devices/{id}/approve", s.approve)
 	mux.HandleFunc("POST /api/v1/devices/{id}/revoke", s.revoke)
+	mux.HandleFunc("POST /api/v1/devices/{id}/merge", s.admin(s.mergeDevice))
+	mux.HandleFunc("GET /api/v1/devices/{id}/duplicates", s.admin(s.deviceDuplicates))
 	mux.HandleFunc("POST /api/v1/devices/{id}/heartbeat", s.deviceAuth(s.heartbeat))
 	mux.HandleFunc("POST /api/v1/devices/{id}/inventory", s.deviceAuth(s.inventory))
 	mux.HandleFunc("GET /api/v1/devices", s.admin(s.devices))
@@ -91,6 +96,11 @@ func routes(s *Server) http.Handler {
 	mux.HandleFunc("GET /api/v1/devices/{id}/jobs/next", s.deviceAuth(s.nextJob))
 	mux.HandleFunc("POST /api/v1/devices/{id}/jobs/{job}/result", s.deviceAuth(s.jobResult))
 	mux.HandleFunc("GET /api/v1/jobs/{id}", s.admin(s.getJob))
+	mux.HandleFunc("GET /api/v1/groups", s.admin(s.listGroups))
+	mux.HandleFunc("POST /api/v1/groups", s.admin(s.createGroup))
+	mux.HandleFunc("GET /api/v1/groups/{id}/members", s.admin(s.groupMembers))
+	mux.HandleFunc("POST /api/v1/groups/{id}/members", s.admin(s.addGroupMembers))
+	mux.HandleFunc("DELETE /api/v1/groups/{id}/members/{deviceID}", s.admin(s.removeGroupMember))
 	return mux
 }
 
@@ -442,9 +452,56 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusOK, response{"status": "ok", "service": "Euryphos", "runtime": "go", "database": "sqlite"})
 }
 
+type auditExecutor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func auditEvent(ctx context.Context, exec auditExecutor, r *http.Request, actorType, actorID, eventType, outcome, targetType, targetID string, details any) error {
+	payload := "{}"
+	if details != nil {
+		raw, err := json.Marshal(details)
+		if err != nil {
+			return err
+		}
+		if len(raw) > 16384 {
+			return errors.New("audit details exceed 16 KiB")
+		}
+		payload = string(raw)
+	}
+	sourceIP := r.RemoteAddr
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		sourceIP = host
+	}
+	userAgent := r.UserAgent()
+	if len(userAgent) > 512 {
+		userAgent = userAgent[:512]
+	}
+	_, err := exec.ExecContext(ctx, `INSERT INTO audit_log(
+		occurred_at, actor_type, actor_id, event_type, outcome, target_type, target_id,
+		source_ip, user_agent, details_json
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		time.Now().UTC().Format(time.RFC3339Nano), actorType, actorID, eventType,
+		outcome, targetType, targetID, sourceIP, userAgent, payload)
+	return err
+}
+
+func (s *Server) authSession(w http.ResponseWriter, r *http.Request) {
+	if !bearer(r, s.adminToken) {
+		_ = auditEvent(r.Context(), s.db, r, "admin", "", "auth.admin.failure", "denied", "session", "", map[string]any{"reason": "invalid_credential"})
+		write(w, http.StatusUnauthorized, response{"error": "unauthorized"})
+		return
+	}
+	if err := auditEvent(r.Context(), s.db, r, "admin", "configured-admin", "auth.admin.success", "success", "session", "", nil); err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "audit_write_failed"})
+		return
+	}
+	write(w, http.StatusOK, response{"status": "authenticated"})
+}
+
 func (s *Server) admin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !bearer(r, s.adminToken) {
+			_ = auditEvent(r.Context(), s.db, r, "admin", "", "auth.admin.failure", "denied", "api", r.URL.Path, map[string]any{"method": r.Method})
 			write(w, http.StatusUnauthorized, response{"error": "unauthorized"})
 			return
 		}
@@ -454,11 +511,21 @@ func (s *Server) admin(next http.HandlerFunc) http.HandlerFunc {
 
 func (s *Server) deviceAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var storedHash, status string
-		err := s.db.QueryRowContext(r.Context(), "SELECT COALESCE(token_hash, ''), status FROM devices WHERE id = ?", r.PathValue("id")).Scan(&storedHash, &status)
-		if err != nil || status != "approved" || !constantHashMatch(storedHash, token(r)) {
+		var storedHash, status, mergedInto string
+		err := s.db.QueryRowContext(r.Context(), "SELECT COALESCE(token_hash, ''), status, COALESCE(merged_into, '') FROM devices WHERE id = ?", r.PathValue("id")).Scan(&storedHash, &status, &mergedInto)
+		validStatus := status == "approved" || (status == "merged" && mergedInto != "")
+		if err != nil || !validStatus || !constantHashMatch(storedHash, token(r)) {
+			_ = auditEvent(r.Context(), s.db, r, "device", r.PathValue("id"), "auth.device.failure", "denied", "device", r.PathValue("id"), nil)
 			write(w, http.StatusUnauthorized, response{"error": "unauthorized"})
 			return
+		}
+		if mergedInto != "" {
+			var canonicalStatus string
+			if err := s.db.QueryRowContext(r.Context(), "SELECT status FROM devices WHERE id = ?", mergedInto).Scan(&canonicalStatus); err != nil || canonicalStatus != "approved" {
+				write(w, http.StatusUnauthorized, response{"error": "device_merged_target_unavailable"})
+				return
+			}
+			r.SetPathValue("id", mergedInto)
 		}
 		next(w, r)
 	}
