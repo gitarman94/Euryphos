@@ -444,6 +444,8 @@ func migrate(ctx context.Context, db *sql.DB) error {
 			status TEXT NOT NULL DEFAULT 'queued',
 			result TEXT,
 			error TEXT,
+			claim_id TEXT,
+			attempt_count INTEGER NOT NULL DEFAULT 0,
 			updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			PRIMARY KEY(job_id, device_id)
 		)`,
@@ -472,6 +474,7 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (10)`,
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (11)`,
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (12)`,
+		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (13)`,
 	}
 	for _, statement := range statements {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
@@ -542,6 +545,17 @@ func migrate(ctx context.Context, db *sql.DB) error {
 			return err
 		}
 	}
+	for _, column := range []struct {
+		name string
+		definition string
+	}{
+		{name: "claim_id", definition: "TEXT"},
+		{name: "attempt_count", definition: "INTEGER NOT NULL DEFAULT 0"},
+	} {
+		if err := ensureTableColumn(ctx, tx, "job_targets", column.name, column.definition); err != nil {
+			return err
+		}
+	}
 	if _, err := tx.ExecContext(ctx, "UPDATE devices SET database_id = rowid WHERE database_id IS NULL"); err != nil {
 		return err
 	}
@@ -576,7 +590,7 @@ func ensureDeviceColumn(ctx context.Context, tx *sql.Tx, columnName, definition 
 }
 
 func ensureTableColumn(ctx context.Context, tx *sql.Tx, tableName, columnName, definition string) error {
-	if tableName != "devices" && tableName != "device_network_interfaces" {
+	if tableName != "devices" && tableName != "device_network_interfaces" && tableName != "job_targets" {
 		return errors.New("unsupported migration table")
 	}
 	rows, err := tx.QueryContext(ctx, "PRAGMA table_info("+tableName+")")
@@ -2583,7 +2597,7 @@ func (s *Server) nextJob(w http.ResponseWriter, r *http.Request) {
 	// when this endpoint checks in again after the receive lease expires. Scope
 	// recovery to this device so an ordinary poll does not scan the whole fleet.
 	recovered, err := tx.ExecContext(r.Context(), `UPDATE job_targets
-		SET status = 'queued', updated_at = CURRENT_TIMESTAMP
+		SET status = 'queued', claim_id = NULL, updated_at = CURRENT_TIMESTAMP
 		WHERE device_id = ? AND status = 'received'
 			AND updated_at < datetime('now', ?)
 			AND job_id IN (SELECT id FROM jobs WHERE status IN ('queued', 'running'))`,
@@ -2601,11 +2615,13 @@ func (s *Server) nextJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var jobID string
-	// UPDATE ... RETURNING atomically claims the next queued target. Jobs that
-	// already have another running target may still deliver work to remaining
-	// devices in the same fleet job.
+	var attempt int
+	claimID := uuid()
+	// Each delivery attempt receives a unique claim ID. A response from a timed-out
+	// attempt cannot overwrite the outcome of a later reclaimed attempt.
 	err = tx.QueryRowContext(r.Context(), `UPDATE job_targets
-		SET status = 'received', updated_at = CURRENT_TIMESTAMP
+		SET status = 'received', claim_id = ?, attempt_count = attempt_count + 1,
+			updated_at = CURRENT_TIMESTAMP
 		WHERE rowid = (
 			SELECT t.rowid FROM job_targets t
 			JOIN jobs j ON j.id = t.job_id
@@ -2613,7 +2629,7 @@ func (s *Server) nextJob(w http.ResponseWriter, r *http.Request) {
 			ORDER BY j.created_at LIMIT 1
 		)
 		AND status = 'queued'
-		RETURNING job_id`, deviceID).Scan(&jobID)
+		RETURNING job_id, attempt_count`, claimID, deviceID).Scan(&jobID, &attempt)
 	if errors.Is(err, sql.ErrNoRows) {
 		if err := tx.Commit(); err != nil {
 			write(w, http.StatusInternalServerError, response{"error": "job_claim_commit_failed"})
@@ -2636,16 +2652,21 @@ func (s *Server) nextJob(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusInternalServerError, response{"error": "job_claim_commit_failed"})
 		return
 	}
-	write(w, http.StatusOK, response{"job": map[string]any{"id": jobID, "action": action, "payload": json.RawMessage(payload)}})
+	write(w, http.StatusOK, response{"job": map[string]any{"id": jobID, "action": action, "payload": json.RawMessage(payload), "claim_id": claimID, "attempt": attempt}})
 }
 
 func (s *Server) jobResult(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Status string          `json:"status"`
-		Result json.RawMessage `json:"result"`
-		Error  string          `json:"error"`
+		ClaimID string          `json:"claim_id"`
+		Status  string          `json:"status"`
+		Result  json.RawMessage `json:"result"`
+		Error   string          `json:"error"`
 	}
 	if !decode(w, r, &in) {
+		return
+	}
+	if len(in.ClaimID) != 36 || strings.TrimSpace(in.ClaimID) != in.ClaimID {
+		write(w, http.StatusBadRequest, response{"error": "invalid_claim_id"})
 		return
 	}
 	allowed := map[string]bool{"started": true, "succeeded": true, "failed": true, "cancelled": true}
@@ -2666,20 +2687,57 @@ func (s *Server) jobResult(w http.ResponseWriter, r *http.Request) {
 	}
 	tx, err := s.db.BeginTx(r.Context(), nil)
 	if err != nil {
-		write(w, http.StatusInternalServerError, response{"error":"database_error"})
+		write(w, http.StatusInternalServerError, response{"error": "database_error"})
 		return
 	}
 	defer tx.Rollback()
+
+	var currentStatus, currentClaim string
+	err = tx.QueryRowContext(r.Context(), `SELECT status, COALESCE(claim_id, '')
+		FROM job_targets WHERE job_id = ? AND device_id = ?`,
+		r.PathValue("job"), r.PathValue("id")).Scan(&currentStatus, &currentClaim)
+	if errors.Is(err, sql.ErrNoRows) {
+		write(w, http.StatusNotFound, response{"error": "job_target_not_found"})
+		return
+	}
+	if err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "job_target_lookup_failed"})
+		return
+	}
+	if currentClaim != in.ClaimID {
+		write(w, http.StatusConflict, response{"error": "stale_job_claim"})
+		return
+	}
+
+	terminal := map[string]bool{"succeeded": true, "failed": true, "cancelled": true}
+	if terminal[currentStatus] {
+		if currentStatus != state {
+			write(w, http.StatusConflict, response{"error": "job_already_terminal", "status": currentStatus})
+			return
+		}
+		if err := tx.Commit(); err != nil {
+			write(w, http.StatusInternalServerError, response{"error": "job_result_commit_failed"})
+			return
+		}
+		write(w, http.StatusOK, response{"status": "already_recorded"})
+		return
+	}
+	if currentStatus != "received" && currentStatus != "running" {
+		write(w, http.StatusConflict, response{"error": "job_target_not_active", "status": currentStatus})
+		return
+	}
+
 	result, err := tx.ExecContext(r.Context(), `UPDATE job_targets
 		SET status = ?, result = ?, error = ?, updated_at = CURRENT_TIMESTAMP
-		WHERE job_id = ? AND device_id = ?`, state, string(in.Result), in.Error, r.PathValue("job"), r.PathValue("id"))
+		WHERE job_id = ? AND device_id = ? AND claim_id = ? AND status IN ('received', 'running')`,
+		state, string(in.Result), in.Error, r.PathValue("job"), r.PathValue("id"), in.ClaimID)
 	if err != nil {
 		write(w, http.StatusInternalServerError, response{"error": "result_update_failed"})
 		return
 	}
 	count, _ := result.RowsAffected()
 	if count == 0 {
-		write(w, http.StatusNotFound, response{"error": "job_target_not_found"})
+		write(w, http.StatusConflict, response{"error": "job_target_changed"})
 		return
 	}
 	_, err = tx.ExecContext(r.Context(), `UPDATE jobs SET status = CASE
@@ -2692,12 +2750,13 @@ func (s *Server) jobResult(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusInternalServerError, response{"error": "job_aggregation_failed"})
 		return
 	}
-	if err := auditEvent(r.Context(), tx, r, "device", r.PathValue("id"), "job.execution.result", in.Status, "job", r.PathValue("job"), map[string]any{"error": in.Error}); err != nil {
+	if err := auditEvent(r.Context(), tx, r, "device", r.PathValue("id"), "job.execution.result", in.Status, "job", r.PathValue("job"),
+		map[string]any{"error": in.Error, "claim_id": in.ClaimID}); err != nil {
 		write(w, http.StatusInternalServerError, response{"error": "audit_write_failed"})
 		return
 	}
 	if err := tx.Commit(); err != nil {
-		write(w, http.StatusInternalServerError, response{"error":"job_result_commit_failed"})
+		write(w, http.StatusInternalServerError, response{"error": "job_result_commit_failed"})
 		return
 	}
 	write(w, http.StatusOK, response{"status": "recorded"})
