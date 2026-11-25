@@ -2712,11 +2712,20 @@ func (s *Server) jobResult(w http.ResponseWriter, r *http.Request) {
 	// response. Treat the same active claim as idempotent and avoid a second
 	// audit event.
 	if state == "running" && currentStatus == "running" {
+		// The started status is also the running-lease heartbeat. Refresh only
+		// the target timestamp; do not create a new audit event for each ping.
+		if _, err := tx.ExecContext(r.Context(), `UPDATE job_targets
+			SET updated_at = CURRENT_TIMESTAMP
+			WHERE job_id = ? AND device_id = ? AND claim_id = ? AND status = 'running'`,
+			r.PathValue("job"), r.PathValue("id"), in.ClaimID); err != nil {
+			write(w, http.StatusInternalServerError, response{"error": "job_heartbeat_update_failed"})
+			return
+		}
 		if err := tx.Commit(); err != nil {
 			write(w, http.StatusInternalServerError, response{"error": "job_result_commit_failed"})
 			return
 		}
-		write(w, http.StatusOK, response{"status": "already_recorded"})
+		write(w, http.StatusOK, response{"status": "heartbeat_recorded"})
 		return
 	}
 
