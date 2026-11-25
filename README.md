@@ -94,9 +94,6 @@ f="$(mktemp)" && curl --retry 3 --retry-all-errors -fsSL "https://raw.githubuser
 ```
 
 The pre-release source-build mode resolves the current public `main` commit by SHA, downloads that source archive, and builds for the CT architecture. It installs Debian's `golang-go`; the Go build tools remain in the CT. This is a **testing path**, not an immutable release deployment. Upgrade mode requires the existing `/etc/euryphos/euryphos.env` and refuses to rotate or replace administrator/enrollment tokens. It backs up the SQLite database before switching the server binary.
-The installer opens a terminal interface with progress sections, resource checks, warnings, a continuation prompt when resources are below the recommended baseline, and the detected CT web addresses after installation. It checks effective CPU availability (including a cgroup CPU quota when exposed), container memory limits (cgroup v2/v1), and total/free space on the filesystem containing `/var/lib/euryphos`. The installer reports when the LXC memory ceiling is not exposed instead of treating host-visible RAM as the container allocation.
-
-This source-build path downloads and pins the exact public `main` commit selected by GitHub at install time, installs Debian's `golang-go`, builds the server for the CT architecture, and uses the same package verification, service setup, SQLite backup, and health-check path as the release installer. The Go build tools remain installed in the CT. This is a **testing path**, not an immutable release deployment.
 
 ### Initial server sizing guidance
 
@@ -142,7 +139,7 @@ f="$(mktemp)" && curl --retry 3 --retry-all-errors -fsSL "https://raw.githubuser
 
 Both purge operations require the operator to type `DELETE EURYPHOS DATA` at the terminal. They remove `/etc/euryphos`, `/var/lib/euryphos` (including SQLite and backups), `/opt/euryphos`, the systemd unit, and the `euryphos` service account. They cannot be undone. A clean reinstall runs the resource pre-flight before asking for that confirmation.
 
-Fresh-install, in-place upgrade, failed-upgrade rollback, reboot, and database restore testing in a Debian 13 Proxmox CT are still required.
+Repeatable fresh-install, in-place upgrade, failed-upgrade rollback, reboot, and database restore qualification in a disposable Debian 13 Proxmox CT are still required.
 
 After installation, the service is managed with:
 
