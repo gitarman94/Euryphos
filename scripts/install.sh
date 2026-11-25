@@ -87,38 +87,92 @@ case "$ARCH" in
   *) die "Unsupported Proxmox CT architecture: $(uname -m). Supported architectures are amd64 and arm64." ;;
 esac
 
-api_headers=(-H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28")
-asset_headers=(-H "Accept: application/octet-stream" -H "X-GitHub-Api-Version: 2022-11-28")
-if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-  api_headers+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
-  asset_headers+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
-fi
-
-if [[ -n "${EURYPHOS_VERSION:-}" ]]; then
-  RELEASE_URL="${API}/releases/tags/${EURYPHOS_VERSION}"
-else
-  RELEASE_URL="${API}/releases/latest"
-fi
-
-log "Resolving the GitHub release."
-if ! RELEASE_JSON="$(curl -fsSL "${api_headers[@]}" "$RELEASE_URL")"; then
-  die "Could not read the requested GitHub release. For a private repository, supply a read-only GitHub token in GITHUB_TOKEN. A release must be published before installation."
-fi
-
-VERSION="$(jq -er '.tag_name' <<< "$RELEASE_JSON")" || die "GitHub response did not contain a release tag."
-ARCHIVE="euryphos-linux-${ARCH}.tar.gz"
-ARCHIVE_ID="$(jq -er --arg name "$ARCHIVE" '.assets[] | select(.name == $name) | .id' <<< "$RELEASE_JSON")" || die "Release $VERSION has no asset named $ARCHIVE."
-CHECKSUM_ID="$(jq -er '.assets[] | select(.name == "SHA256SUMS") | .id' <<< "$RELEASE_JSON")" || die "Release $VERSION has no SHA256SUMS asset."
-
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
-log "Downloading $VERSION for Linux $ARCH."
-curl -fsSL -L "${asset_headers[@]}" "${API}/releases/assets/${ARCHIVE_ID}" -o "${TMP_DIR}/${ARCHIVE}"
-curl -fsSL -L "${asset_headers[@]}" "${API}/releases/assets/${CHECKSUM_ID}" -o "${TMP_DIR}/SHA256SUMS"
+ARCHIVE="euryphos-linux-${ARCH}.tar.gz"
 
-EXPECTED_SHA="$(awk -v name="$ARCHIVE" '$2 == name { print $1; exit }' "${TMP_DIR}/SHA256SUMS")"
-[[ "$EXPECTED_SHA" =~ ^[[:xdigit:]]{64}$ ]] || die "The release checksum manifest does not contain a valid checksum for $ARCHIVE."
-printf '%s  %s\n' "$EXPECTED_SHA" "$ARCHIVE" | (cd "$TMP_DIR" && sha256sum -c -) || die "Release checksum verification failed."
+if [[ "${EURYPHOS_SOURCE_BUILD:-0}" == "1" ]]; then
+  log "Source-build mode enabled; resolving the current main commit."
+  apt-get install -y --no-install-recommends golang-go
+
+  GO_VERSION="$(go env GOVERSION)"
+  if [[ "$GO_VERSION" =~ ^go([0-9]+)\.([0-9]+) ]]; then
+    GO_MAJOR="${BASH_REMATCH[1]}"
+    GO_MINOR="${BASH_REMATCH[2]}"
+  else
+    die "Could not parse the installed Go version: $GO_VERSION"
+  fi
+  if (( GO_MAJOR < 1 || (GO_MAJOR == 1 && GO_MINOR < 23) )); then
+    die "Source builds require Go 1.23 or later; found $GO_VERSION."
+  fi
+
+  api_headers=(-H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28")
+  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+    api_headers+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+  fi
+  SOURCE_SHA="$(curl -fsSL "${api_headers[@]}" "${API}/commits/main" | jq -er '.sha')" || die "Could not resolve the current public main commit."
+  [[ "$SOURCE_SHA" =~ ^[[:xdigit:]]{40}$ ]] || die "GitHub returned an invalid source commit SHA."
+
+  SOURCE_DIR="${TMP_DIR}/source"
+  PACKAGE_DIR="${TMP_DIR}/package"
+  mkdir -m 0700 "$SOURCE_DIR" "$PACKAGE_DIR"
+  log "Downloading source commit ${SOURCE_SHA:0:12} and building Linux $ARCH."
+  curl -fsSL "${API}/tarball/${SOURCE_SHA}" -o "${TMP_DIR}/source.tar.gz" || die "Could not download the source archive."
+  tar -tzf "${TMP_DIR}/source.tar.gz" >/dev/null || die "The source archive is invalid."
+  tar --no-same-owner --no-same-permissions -xzf "${TMP_DIR}/source.tar.gz" --strip-components=1 -C "$SOURCE_DIR"
+  for required_source in go.mod cmd/euryphos-server/main.go deploy/euryphos.service LICENSE; do
+    [[ -f "${SOURCE_DIR}/${required_source}" ]] || die "Source archive is missing ${required_source}."
+  done
+
+  if ! (
+    cd "$SOURCE_DIR"
+    GOTOOLCHAIN=local GOMODCACHE="${TMP_DIR}/gomodcache" GOCACHE="${TMP_DIR}/gocache" \
+      CGO_ENABLED=0 GOOS=linux GOARCH="$ARCH" \
+      go build -trimpath -ldflags="-s -w" -o "${TMP_DIR}/euryphos-server" ./cmd/euryphos-server
+  ); then
+    die "Building the Euryphos server from source failed."
+  fi
+
+  install -m 0755 "${TMP_DIR}/euryphos-server" "${PACKAGE_DIR}/euryphos-server"
+  install -m 0644 "${SOURCE_DIR}/deploy/euryphos.service" "${PACKAGE_DIR}/euryphos.service"
+  install -m 0644 "${SOURCE_DIR}/LICENSE" "${PACKAGE_DIR}/LICENSE"
+  VERSION="main-${SOURCE_SHA:0:12}"
+  printf '%s\n' "$VERSION" > "${PACKAGE_DIR}/VERSION"
+  tar -C "$PACKAGE_DIR" -czf "${TMP_DIR}/${ARCHIVE}" .
+  EXPECTED_SHA="$(sha256sum "${TMP_DIR}/${ARCHIVE}" | awk '{ print $1 }')"
+  log "Built test package $VERSION from source."
+else
+  api_headers=(-H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28")
+  asset_headers=(-H "Accept: application/octet-stream" -H "X-GitHub-Api-Version: 2022-11-28")
+  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+    api_headers+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+    asset_headers+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+  fi
+
+  if [[ -n "${EURYPHOS_VERSION:-}" ]]; then
+    RELEASE_URL="${API}/releases/tags/${EURYPHOS_VERSION}"
+  else
+    RELEASE_URL="${API}/releases/latest"
+  fi
+
+  log "Resolving the GitHub release."
+  if ! RELEASE_JSON="$(curl -fsSL "${api_headers[@]}" "$RELEASE_URL")"; then
+    die "Could not read the requested GitHub release. A published release is required; use EURYPHOS_SOURCE_BUILD=1 for an untagged test build."
+  fi
+
+  VERSION="$(jq -er '.tag_name' <<< "$RELEASE_JSON")" || die "GitHub response did not contain a release tag."
+  ARCHIVE_ID="$(jq -er --arg name "$ARCHIVE" '.assets[] | select(.name == $name) | .id' <<< "$RELEASE_JSON")" || die "Release $VERSION has no asset named $ARCHIVE."
+  CHECKSUM_ID="$(jq -er '.assets[] | select(.name == "SHA256SUMS") | .id' <<< "$RELEASE_JSON")" || die "Release $VERSION has no SHA256SUMS asset."
+
+  log "Downloading $VERSION for Linux $ARCH."
+  curl -fsSL -L "${asset_headers[@]}" "${API}/releases/assets/${ARCHIVE_ID}" -o "${TMP_DIR}/${ARCHIVE}"
+  curl -fsSL -L "${asset_headers[@]}" "${API}/releases/assets/${CHECKSUM_ID}" -o "${TMP_DIR}/SHA256SUMS"
+
+  EXPECTED_SHA="$(awk -v name="$ARCHIVE" '$2 == name { print $1; exit }' "${TMP_DIR}/SHA256SUMS")"
+fi
+
+[[ "$EXPECTED_SHA" =~ ^[[:xdigit:]]{64}$ ]] || die "The expected SHA-256 checksum is missing or invalid."
+printf '%s  %s\n' "$EXPECTED_SHA" "$ARCHIVE" | (cd "$TMP_DIR" && sha256sum -c -) || die "Package checksum verification failed."
 
 VERSION_DIR_NAME="${VERSION//[^A-Za-z0-9._-]/_}-${EXPECTED_SHA:0:12}"
 NEW_RELEASE="${RELEASES_DIR}/${VERSION_DIR_NAME}"
