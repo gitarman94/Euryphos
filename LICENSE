@@ -1,5 +1,5 @@
 Euryphos Personal Use License (EPUL) 1.0
-Copyright © 2026 the applicable Euryphos copyright holders. All rights reserved.
+Copyright © 2026 Euryphos contributors and applicable rights holders. All rights reserved.
 
 IMPORTANT: This is a custom source-available license, not an OSI-approved open-source license. It applies only to material for which the applicable copyright holder has authority to grant these terms. Third-party components and material subject to a previously granted license remain governed by their applicable license. Nothing in this document withdraws rights already granted under an earlier license, including GPL-3.0 rights for any material previously distributed under GPL-3.0.
 
@@ -7,13 +7,13 @@ IMPORTANT: This is a custom source-available license, not an OSI-approved open-s
 
 “Software” means the Euryphos source code, object code, and accompanying documentation in this repository, but only to the extent the Licensor has authority to license that material.
 
-“Individual” means a natural person acting on their own behalf and not on behalf of an Organization.
+“Individual” means a natural person acting on their own behalf.
 
-“Personal Use” means use solely by an Individual for that Individual’s personal devices, household, home lab, hobby, or self-directed learning. Personal Use must not be performed for, on behalf of, or as part of the operations of an Organization, and must not provide a service to customers or generate a commercial benefit for an Organization.
+“Personal Use” means use solely by an Individual for that Individual’s own personal devices, household, home lab, hobby, or self-directed learning. Personal Use must not be performed for, on behalf of, or as part of the operations of a Company or Business, and must not provide services to customers or generate a commercial benefit for a Company or Business.
 
-“Organization” means a company, corporation, partnership, business, government body, nonprofit, school, university, agency, or other legal or organized entity.
+“Company or Business” means a company, corporation, partnership, limited liability company, sole-proprietorship, or other entity or operation organized to conduct trade, commerce, or for-profit business.
 
-“Commercial or Organizational Use” means any use of the Software by or for an Organization, including use to manage or monitor organizational devices or infrastructure; internal business, public-sector, nonprofit, or institutional operations; provision of services to customers; consulting or managed services; or use connected with revenue-generating activity. Whether the use itself generates revenue is not determinative.
+“Corporate Use” means any use of the Software by, for, or on behalf of a Company or Business. This includes managing or monitoring company or business computers, servers, endpoints, networks, or infrastructure; internal business operations; customer-facing services; consulting; managed services; and use by an employee, contractor, consultant, reseller, or service provider acting for a Company or Business. Corporate Use requires a separate written commercial license even if the deployment is internal or does not directly generate revenue.
 
 “Licensor” means the copyright holder(s) or other rights holder(s) authorized to grant the applicable rights.
 
@@ -23,18 +23,22 @@ Subject to this license, the Licensor grants an Individual a worldwide, non-excl
 
 No fee is charged for the Personal Use rights granted in this section.
 
-3. Commercial and Organizational License Required
+3. Corporate Use Requires a Commercial License
 
-The Personal Use grant does not authorize Commercial or Organizational Use.
+The Personal Use grant does not authorize Corporate Use.
 
-Before any Commercial or Organizational Use, the user must obtain a separate written commercial license from the applicable rights holder. This requirement applies even when an Individual downloads or operates the Software on behalf of an Organization, and even when the deployment is internal, nonprofit, educational, government, evaluation-only, or not directly revenue-generating.
+Before any Corporate Use, the user must obtain a separate written commercial license from the applicable rights holder. No commercial rights are granted by access to this repository, by possession of a copy, or by this Personal Use license.
 
-No commercial rights are granted by access to this repository, by possession of a copy, or by this Personal Use license.
+Use by a person acting for a Company or Business is Corporate Use, even if that person downloads, installs, or operates the Software using a personal account or personal equipment.
 
-4. Restrictions
+4. Other Institutional Use
+
+This license grants free rights only for Personal Use as defined above. It does not itself grant use rights to an institution or other legal entity. Situations involving public-sector, charitable, nonprofit, educational, or other institutional use that are not clearly Personal Use or Corporate Use require written permission or a separate written license from the applicable rights holder before deployment.
+
+5. Restrictions
 
 Except where a separate written agreement or applicable third-party license permits it, the licensee must not:
-- use the Software for Commercial or Organizational Use;
+- use the Software for Corporate Use without a separate written commercial license;
 - sell, rent, lease, sublicense, publish, or redistribute the Software or modified versions;
 - make the Software available as a hosted, managed, or service-provider offering;
 - remove or alter copyright, attribution, or license notices;
@@ -42,7 +46,7 @@ Except where a separate written agreement or applicable third-party license perm
 
 An Individual may keep reasonable backup copies for that Individual’s Personal Use.
 
-5. Third-Party and Previously Licensed Material
+6. Third-Party and Previously Licensed Material
 
 Third-party libraries, dependencies, assets, and files expressly identified as being under another license remain subject to those separate terms.
 
@@ -50,21 +54,21 @@ This license does not terminate, narrow, or replace any license grant made befor
 
 If licensing provenance for a file is uncertain, do not assume that this document overrides the file’s prior license. Review the file history and applicable notices.
 
-6. Contributions
+7. Contributions
 
 A contribution is not automatically relicensed by this document. Contributions are governed by the license under which the contributor submitted them or by a separate written contributor agreement.
 
-7. Termination
+8. Termination
 
 The rights granted under section 2 terminate automatically if the licensee materially violates this license. Upon termination, the licensee must stop using and destroy copies of the Software, except to the extent applicable law or another license requires otherwise.
 
-8. Disclaimer and Limitation
+9. Disclaimer and Limitation
 
 TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE SOFTWARE IS PROVIDED “AS IS” AND “AS AVAILABLE,” WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND NON-INFRINGEMENT.
 
 TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE LICENSOR SHALL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, CONSEQUENTIAL, OR PUNITIVE DAMAGES, OR FOR LOSS OF DATA, PROFITS, REVENUE, OR BUSINESS INTERRUPTION, ARISING OUT OF OR RELATED TO THE SOFTWARE OR THIS LICENSE.
 
-9. Other Terms
+10. Other Terms
 
 This license is not legal advice and does not create a commercial license. Commercial rights, fees, support, service levels, warranties, indemnities, and other terms must be set out in a separate written agreement signed by the applicable rights holder.
 
