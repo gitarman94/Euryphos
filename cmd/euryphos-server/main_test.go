@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -98,10 +99,17 @@ func TestSQLiteServerAgentProtocol(t *testing.T) {
 	if !strings.Contains(string(history), `"has_more":true`) || !strings.Contains(string(history), `"cpu":"test-cpu-v2"`) {
 		t.Fatalf("inventory history pagination failed: %s", history)
 	}
-	pageTwo := performRequest(t, handler, http.MethodGet, "/api/v1/devices/"+enrollment.DeviceID+"/inventory/history?category=system&limit=1&before_id=3", "admin-test-token", "", http.StatusOK)
+	var historyPage struct {
+		NextBeforeID int64 `json:"next_before_id"`
+	}
+	if err := json.Unmarshal(history, &historyPage); err != nil || historyPage.NextBeforeID < 1 {
+		t.Fatalf("invalid inventory history cursor: %s (error: %v)", history, err)
+	}
+	pageTwo := performRequest(t, handler, http.MethodGet, "/api/v1/devices/"+enrollment.DeviceID+"/inventory/history?category=system&limit=1&before_id="+strconv.FormatInt(historyPage.NextBeforeID, 10), "admin-test-token", "", http.StatusOK)
 	if !strings.Contains(string(pageTwo), `"cpu":"test-cpu"`) {
 		t.Fatalf("inventory history cursor did not return older snapshot: %s", pageTwo)
 	}
+	performRequest(t, handler, http.MethodGet, "/api/v1/devices/"+enrollment.DeviceID, "", "", http.StatusUnauthorized)
 
 	devices := performRequest(t, handler, http.MethodGet, "/api/v1/devices", "admin-test-token", "", http.StatusOK)
 	if !strings.Contains(string(devices), `"hostname":"test-linux"`) || !strings.Contains(string(devices), `"status":"approved"`) {
