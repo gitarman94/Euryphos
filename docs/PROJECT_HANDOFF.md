@@ -501,11 +501,12 @@ When continuing this work after chat history loss:
 
 ### Immediate next task
 
-1. Verify the latest server CI after the installer, unit, release workflow, and graceful-shutdown edits; ensure the install script passes `bash -n`.
-2. Publish a version tag only after the source/release workflow passes, then confirm the release contains both architecture archives and `SHA256SUMS`.
-3. Test the complete install/upgrade/rollback workflow in a disposable Debian 13 Proxmox CT with populated data. Include a deliberately failed update and compare the restored DB plus admin/enrollment/device credentials.
-4. Once server deployment is proven, run a real server + agent end-to-end test (enrollment, approval, heartbeat, all inventory categories, job receipt, service action/result, disconnect/reconnect) before broadening endpoint actions.
-5. Keep patch discovery and installation behind reliable job acknowledgements, leases, attempts, idempotency, and action auditing.
+1. Add a durable agent-side in-flight job journal. Persist the job ID, claim ID, action, payload, attempt, and execution phase before executing any action; recover conservatively after process restart and never silently rerun an action whose outcome is unknown.
+2. Define how an interrupted/unknown action is reported without allowing the server to dispatch it again automatically. Preserve the at-least-once contract and require an explicit retry policy for non-idempotent operations.
+3. Add server/agent protocol tests for interruption before execution, interruption during execution, lost result response, duplicate result, stale claim, and reconnect/restart.
+4. Run a real server + agent end-to-end test on a disposable Linux VM and Windows VM. No actual installed-binary or live service-control test has been completed yet.
+5. Publish the first server release and qualify Debian 13 Proxmox fresh install, in-place upgrade, failed-upgrade rollback, reboot, backup, and restore before production deployment.
+6. Keep patch discovery and installation behind reliable job acknowledgement, persisted execution state, explicit retry policy, and action auditing.
 
 ---
 
