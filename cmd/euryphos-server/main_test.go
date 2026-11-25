@@ -68,8 +68,21 @@ func TestMigrationAddsConnectionColumnsToExistingDatabase(t *testing.T) {
 		}
 		columns[name] = true
 	}
-	if !columns["first_connected_at"] || !columns["last_connected_at"] {
-		t.Fatalf("migration did not add connection columns: %#v", columns)
+	for _, column := range []string{
+		"first_connected_at", "last_connected_at", "database_id", "serial_number",
+		"smbios_uuid", "directory_domain", "organizational_unit", "os_distribution",
+		"cpu_model", "memory_total_bytes", "local_ip",
+	} {
+		if !columns[column] {
+			t.Fatalf("migration did not add device column %q: %#v", column, columns)
+		}
+	}
+	if _, err := db.Exec("INSERT INTO devices(id,hostname) VALUES('legacy-device','legacy-host')"); err != nil {
+		t.Fatalf("insert migrated device: %v", err)
+	}
+	var databaseID int64
+	if err := db.QueryRow("SELECT database_id FROM devices WHERE id='legacy-device'").Scan(&databaseID); err != nil || databaseID < 1 {
+		t.Fatalf("database-generated device ID missing: id=%d error=%v", databaseID, err)
 	}
 }
 
