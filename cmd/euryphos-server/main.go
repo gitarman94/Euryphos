@@ -158,16 +158,111 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		)`,
 		`CREATE TABLE IF NOT EXISTS devices (
 			id TEXT PRIMARY KEY,
+			database_id INTEGER,
 			hostname TEXT NOT NULL DEFAULT '',
+			fqdn TEXT NOT NULL DEFAULT '',
 			os_family TEXT NOT NULL DEFAULT '',
 			os_version TEXT NOT NULL DEFAULT '',
+			os_architecture TEXT NOT NULL DEFAULT '',
+			os_build TEXT NOT NULL DEFAULT '',
+			os_install_date TEXT NOT NULL DEFAULT '',
+			directory_type TEXT NOT NULL DEFAULT '',
+			directory_domain TEXT NOT NULL DEFAULT '',
+			organizational_unit TEXT NOT NULL DEFAULT '',
+			directory_site TEXT NOT NULL DEFAULT '',
+			manufacturer TEXT NOT NULL DEFAULT '',
+			model TEXT NOT NULL DEFAULT '',
+			serial_number TEXT NOT NULL DEFAULT '',
+			smbios_uuid TEXT NOT NULL DEFAULT '',
+			chassis_type TEXT NOT NULL DEFAULT '',
+			cpu_model TEXT NOT NULL DEFAULT '',
+			cpu_vendor TEXT NOT NULL DEFAULT '',
+			cpu_architecture TEXT NOT NULL DEFAULT '',
+			cpu_physical_cores INTEGER,
+			cpu_logical_processors INTEGER,
+			memory_total_bytes INTEGER,
+			bios_version TEXT NOT NULL DEFAULT '',
+			bios_release_date TEXT NOT NULL DEFAULT '',
+			root_total_bytes INTEGER,
+			root_free_bytes INTEGER,
+			root_available_bytes INTEGER,
+			last_boot TEXT NOT NULL DEFAULT '',
+			uptime_seconds REAL,
+			timezone TEXT NOT NULL DEFAULT '',
+			agent_version TEXT NOT NULL DEFAULT '',
+			local_ip TEXT NOT NULL DEFAULT '',
+			mac_address TEXT NOT NULL DEFAULT '',
+			default_gateway TEXT NOT NULL DEFAULT '',
+			dns_servers_json TEXT NOT NULL DEFAULT '[]',
+			connection_type TEXT NOT NULL DEFAULT '',
+			duplicate_of TEXT,
+			merged_into TEXT,
 			status TEXT NOT NULL DEFAULT 'pending',
 			token_hash TEXT,
 			last_seen TEXT,
 			first_connected_at TEXT,
 			last_connected_at TEXT,
+			last_inventory_at TEXT,
 			created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_devices_database_id ON devices(database_id)`,
+		`UPDATE devices SET database_id = rowid WHERE database_id IS NULL`,
+		`CREATE TRIGGER IF NOT EXISTS trg_devices_database_id_insert
+			AFTER INSERT ON devices WHEN NEW.database_id IS NULL
+			BEGIN UPDATE devices SET database_id = NEW.rowid WHERE rowid = NEW.rowid; END`,
+		`CREATE INDEX IF NOT EXISTS idx_devices_serial_number ON devices(serial_number)`,
+		`CREATE INDEX IF NOT EXISTS idx_devices_smbios_uuid ON devices(smbios_uuid)`,
+		`CREATE INDEX IF NOT EXISTS idx_devices_directory_domain_ou ON devices(directory_domain, organizational_unit)`,
+		`CREATE TABLE IF NOT EXISTS device_aliases (
+			old_device_id TEXT PRIMARY KEY,
+			canonical_device_id TEXT NOT NULL REFERENCES devices(id),
+			token_hash TEXT NOT NULL,
+			created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS device_duplicate_candidates (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			device_id TEXT NOT NULL REFERENCES devices(id),
+			candidate_device_id TEXT NOT NULL REFERENCES devices(id),
+			matched_on TEXT NOT NULL,
+			confidence TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'pending',
+			created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(device_id, candidate_device_id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS audit_log (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			occurred_at TEXT NOT NULL,
+			actor_type TEXT NOT NULL,
+			actor_id TEXT NOT NULL DEFAULT '',
+			event_type TEXT NOT NULL,
+			outcome TEXT NOT NULL,
+			target_type TEXT NOT NULL DEFAULT '',
+			target_id TEXT NOT NULL DEFAULT '',
+			source_ip TEXT NOT NULL DEFAULT '',
+			user_agent TEXT NOT NULL DEFAULT '',
+			details_json TEXT NOT NULL DEFAULT '{}'
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_log_time ON audit_log(occurred_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_log_target ON audit_log(target_type, target_id, occurred_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_log_event ON audit_log(event_type, occurred_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS machine_groups (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+			description TEXT NOT NULL DEFAULT '',
+			group_type TEXT NOT NULL CHECK(group_type IN ('static','dynamic')),
+			match_operator TEXT NOT NULL DEFAULT 'all' CHECK(match_operator IN ('all','any')),
+			rules_json TEXT NOT NULL DEFAULT '[]',
+			created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS device_group_memberships (
+			group_id INTEGER NOT NULL REFERENCES machine_groups(id) ON DELETE CASCADE,
+			device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+			added_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			added_by TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY(group_id, device_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_group_memberships_device ON device_group_memberships(device_id)`
 		`CREATE TABLE IF NOT EXISTS device_inventory (
 			device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
 			category TEXT NOT NULL,
@@ -212,6 +307,7 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (1)`,
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (2)`,
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (3)`,
+		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (4)`,
 	}
 	for _, statement := range statements {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
@@ -224,10 +320,55 @@ func migrate(ctx context.Context, db *sql.DB) error {
 	}{
 		{name: "first_connected_at", definition: "TEXT"},
 		{name: "last_connected_at", definition: "TEXT"},
+	}
+	for _, column := range []struct {
+		name string
+		definition string
+	}{
+		{name: "database_id", definition: "INTEGER"},
+		{name: "fqdn", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "os_architecture", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "os_build", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "os_install_date", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "directory_type", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "directory_domain", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "organizational_unit", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "directory_site", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "manufacturer", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "model", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "serial_number", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "smbios_uuid", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "chassis_type", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "cpu_model", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "cpu_vendor", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "cpu_architecture", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "cpu_physical_cores", definition: "INTEGER"},
+		{name: "cpu_logical_processors", definition: "INTEGER"},
+		{name: "memory_total_bytes", definition: "INTEGER"},
+		{name: "bios_version", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "bios_release_date", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "root_total_bytes", definition: "INTEGER"},
+		{name: "root_free_bytes", definition: "INTEGER"},
+		{name: "root_available_bytes", definition: "INTEGER"},
+		{name: "last_boot", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "uptime_seconds", definition: "REAL"},
+		{name: "timezone", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "agent_version", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "local_ip", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "mac_address", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "default_gateway", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "dns_servers_json", definition: "TEXT NOT NULL DEFAULT '[]'"},
+		{name: "connection_type", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "duplicate_of", definition: "TEXT"},
+		{name: "merged_into", definition: "TEXT"},
+		{name: "last_inventory_at", definition: "TEXT"},
 	} {
 		if err := ensureDeviceColumn(ctx, tx, column.name, column.definition); err != nil {
 			return err
 		}
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE devices SET database_id = rowid WHERE database_id IS NULL"); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
