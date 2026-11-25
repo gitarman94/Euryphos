@@ -59,7 +59,8 @@ This repository currently includes:
 - Normalized child rows for network interfaces and installed software; current category payloads plus change history for relevant facts. System history ignores volatile readings (uptime, free/available memory and disk space, battery charge/status); the latest device row still refreshes those values. This is not a metrics time-series store.
 - Strong duplicate candidate detection (SMBIOS UUID, or serial + manufacturer + model), reviewable candidates, explicit merge, and continued authentication using the merged endpoint's existing token.
 - Initial `audit_log` events for authentication outcomes, enrollment/approval/revocation, group changes, job actions/results, and duplicate merges.
-- Static and rule-based dynamic machine groups using normalized Windows AD and Linux directory attributes.
+- Static and rule-based dynamic machine groups using normalized Windows AD and Linux directory attributes, with group create/edit/delete and explicit membership management.
+- Jobs can target explicit devices and/or groups. Group membership is expanded into a fixed approved-device target list at job creation; group IDs/names are retained in job history even if groups are later edited or deleted.
 - Agent job polling and result reporting endpoints.
 - Docker Compose deployment with a persistent SQLite volume.
 
