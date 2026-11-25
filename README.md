@@ -184,6 +184,8 @@ The API is an early implementation contract and may change before a stable relea
 - [`docs/COMPLETION_PLAN.md`](docs/COMPLETION_PLAN.md) — engineering roadmap and release acceptance checklist.
 - [`docs/BRAND_IDENTITY.md`](docs/BRAND_IDENTITY.md) — product name and pronunciation.
 
-## License
+## License and commercial use
 
-A license has not yet been selected. The included [`LICENSE`](LICENSE) file records that status; it does not grant permission to use, modify, or redistribute this code. Select and add an appropriate license before presenting this repository as open source.
+Euryphos is source-available under the **Euryphos Personal Use License (EPUL) 1.0**. Individuals may use and modify it free of charge for their own personal devices, home lab, hobby, and self-directed learning. Use by or on behalf of a company or other organization—including managing organizational devices or infrastructure—requires a separate written commercial license.
+
+This is **not an OSI-approved open-source license**. Read [`LICENSE`](LICENSE) and [`COMMERCIAL-LICENSING.md`](COMMERCIAL-LICENSING.md) before use. Third-party components and previously granted rights remain subject to their applicable licenses; this license does not withdraw rights already granted under another license.
