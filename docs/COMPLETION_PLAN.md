@@ -35,6 +35,24 @@ A workstream is complete only when:
 7. Documentation and operational runbooks are updated.
 8. Acceptance criteria are demonstrated in a repeatable environment.
 
+
+## Device inventory and management UI scope (required specification)
+
+The full field catalog, privacy model, API requirements, and acceptance criteria are maintained in [`docs/DEVICE_MANAGEMENT_UI_SPEC.md`](DEVICE_MANAGEMENT_UI_SPEC.md). The separate endpoint collection contract is in the Euryphos-Agent repository at [`docs/TELEMETRY_COLLECTION_SPEC.md`](https://github.com/gitarman94/Euryphos-Agent/blob/main/docs/TELEMETRY_COLLECTION_SPEC.md).
+
+Implementation tasks:
+- [ ] Add paginated/searchable/sortable Devices page with clickable hostname links and presence/lifecycle states separated.
+- [ ] Add full device detail page and normalized data APIs for identity, directory, hardware, OS, storage, network, agent, certificates, user sessions, activity, and inventory freshness.
+- [ ] Add server-derived online/offline, first-connected, last-connected, and connecting-IP values with trusted-proxy handling.
+- [ ] Add versioned normalized inventory storage, snapshots/history, migrations, and category freshness.
+- [ ] Implement endpoint providers and cross-platform telemetry in Euryphos-Agent according to its collection specification.
+- [ ] Implement client-local GPS opt-in setting, default disabled, locally authoritative, tested through upgrades and remote-policy attempts.
+- [ ] Add role permissions, audit for sensitive inventory access/export, retention limits, and redaction before exposing GPS, serial/SMBIOS IDs, network identifiers, and logged-in users.
+- [ ] Complete real server/agent integration tests proving collection, persistence, and device-detail rendering with actual data.
+
+Do not mark the UI complete while it is only a static mockup or while displayed fields have no implemented data source.
+
+---
 ---
 
 # PART I — REPOSITORY AUDIT AND PROJECT CONTROL
