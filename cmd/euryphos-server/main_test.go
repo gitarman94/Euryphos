@@ -318,6 +318,241 @@ func TestSQLiteServerAgentProtocol(t *testing.T) {
 	}
 }
 
+
+func seedOverdueJobAlertFixture(t *testing.T, db *sql.DB, jobID, deviceID, action, payload, claimID, deviceToken string) {
+	t.Helper()
+	if _, err := db.Exec("INSERT INTO devices(id,status,token_hash,hostname) VALUES(?,'approved',?,?)",
+		deviceID, hash(deviceToken), deviceID+"-host"); err != nil {
+		t.Fatalf("insert device: %v", err)
+	}
+	if _, err := db.Exec("INSERT INTO jobs(id,action,payload,status) VALUES(?,?,?,'running')",
+		jobID, action, payload); err != nil {
+		t.Fatalf("insert job: %v", err)
+	}
+	if _, err := db.Exec("INSERT INTO job_targets(job_id,device_id,status,claim_id,attempt_count,updated_at) VALUES(?,?,'running',?,1,datetime('now','-5 minutes'))",
+		jobID, deviceID, claimID); err != nil {
+		t.Fatalf("insert overdue target: %v", err)
+	}
+}
+
+func requestJobAlertQueue(t *testing.T, handler http.Handler) (int64, string, string) {
+	t.Helper()
+	raw := performRequest(t, handler, http.MethodGet, "/api/v1/job-alerts?page=1&page_size=20",
+		"admin-test-token", "", http.StatusOK)
+	var queue struct {
+		Total int `json:"total"`
+		OpenCount int `json:"open_count"`
+		Items []struct {
+			ID int64 `json:"id"`
+			ClaimID string `json:"claim_id"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &queue); err != nil {
+		t.Fatalf("decode job alert queue: %v", err)
+	}
+	if queue.Total < 1 || queue.OpenCount < 1 || len(queue.Items) < 1 || queue.Items[0].ID < 1 {
+		t.Fatalf("expected an open overdue alert in queue: %s", raw)
+	}
+	return queue.Items[0].ID, queue.Items[0].ClaimID, string(raw)
+}
+
+func TestJobAlertQueueAcknowledgementAndHeartbeatRecovery(t *testing.T) {
+	db, err := openDatabase(filepath.Join(t.TempDir(), "job-alert-ack.db"))
+	if err != nil { t.Fatal(err) }
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := migrate(ctx, db); err != nil { t.Fatal(err) }
+
+	const jobID = "job-alert-ack"
+	const deviceID = "device-alert-ack"
+	const claimID = "22222222-2222-4222-8222-222222222222"
+	seedOverdueJobAlertFixture(t, db, jobID, deviceID, "inventory.refresh", "{}", claimID, "alert-token")
+	handler := securityHeaders(routes(&Server{db:db,adminToken:"admin-test-token",jobStaleAfter:time.Minute}))
+	alertID, gotClaimID, queue := requestJobAlertQueue(t, handler)
+	if gotClaimID != claimID || !strings.Contains(queue, "\"retry_allowed\":true") {
+		t.Fatalf("queue did not expose the active claim and safe retry classification: %s", queue)
+	}
+	ackBody := "{\"reason\":\"Reviewed endpoint heartbeat and contacted the operator.\"}"
+	performRequest(t, handler, http.MethodPost,
+		"/api/v1/job-alerts/"+strconv.FormatInt(alertID,10)+"/acknowledge",
+		"admin-test-token", ackBody, http.StatusOK)
+	var targetStatus string
+	if err := db.QueryRowContext(ctx, "SELECT status FROM job_targets WHERE job_id=? AND device_id=?", jobID, deviceID).Scan(&targetStatus); err != nil {
+		t.Fatal(err)
+	}
+	if targetStatus != "running" {
+		t.Fatalf("acknowledging an alert must not change target execution state: %q", targetStatus)
+	}
+	var ackAudit int
+	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM audit_log WHERE event_type='job.alert.acknowledged' AND target_id=?", jobID+"/"+deviceID).Scan(&ackAudit); err != nil || ackAudit != 1 {
+		t.Fatalf("acknowledgement audit missing: rows=%d err=%v", ackAudit, err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE job_targets SET updated_at=CURRENT_TIMESTAMP WHERE job_id=? AND device_id=?", jobID, deviceID); err != nil {
+		t.Fatal(err)
+	}
+	// A new handler instance simulates a server process restart while SQLite
+	// retains the outstanding alert record.
+	restartedHandler := securityHeaders(routes(&Server{db:db,adminToken:"admin-test-token",jobStaleAfter:time.Minute}))
+	raw := performRequest(t, restartedHandler, http.MethodGet, "/api/v1/job-alerts?page=1&page_size=20",
+		"admin-test-token", "", http.StatusOK)
+	if !strings.Contains(string(raw), "\"total\":0") {
+		t.Fatalf("recovered alert should leave the active review queue: %s", raw)
+	}
+	var alertStatus, resolution string
+	if err := db.QueryRowContext(ctx, "SELECT status,resolution FROM job_alerts WHERE id=?", alertID).Scan(&alertStatus,&resolution); err != nil {
+		t.Fatal(err)
+	}
+	if alertStatus != "recovered" || resolution != "heartbeat_resumed" {
+		t.Fatalf("heartbeat recovery was not persisted: status=%q resolution=%q", alertStatus, resolution)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM audit_log WHERE event_type='job.alert.recovered' AND target_id=?", jobID+"/"+deviceID).Scan(&ackAudit); err != nil || ackAudit != 1 {
+		t.Fatalf("heartbeat recovery audit missing: rows=%d err=%v", ackAudit, err)
+	}
+}
+
+func TestJobAlertResolutionMarksOutcomeIndeterminateAndRejectsLateResult(t *testing.T) {
+	db, err := openDatabase(filepath.Join(t.TempDir(), "job-alert-indeterminate.db"))
+	if err != nil { t.Fatal(err) }
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := migrate(ctx, db); err != nil { t.Fatal(err) }
+
+	const jobID = "job-alert-indeterminate"
+	const deviceID = "device-alert-indeterminate"
+	const claimID = "33333333-3333-4333-8333-333333333333"
+	const deviceToken = "indeterminate-device-token"
+	seedOverdueJobAlertFixture(t, db, jobID, deviceID, "inventory.refresh", "{}", claimID, deviceToken)
+	handler := securityHeaders(routes(&Server{db:db,adminToken:"admin-test-token",jobStaleAfter:time.Minute}))
+	alertID, _, _ := requestJobAlertQueue(t, handler)
+	body := "{\"decision\":\"mark_indeterminate\",\"expected_claim_id\":\"33333333-3333-4333-8333-333333333333\",\"reason\":\"Endpoint could not be reached; execution outcome cannot be verified.\",\"confirm\":true}"
+	performRequest(t, handler, http.MethodPost,
+		"/api/v1/job-alerts/"+strconv.FormatInt(alertID,10)+"/resolve",
+		"admin-test-token", body, http.StatusOK)
+	var targetStatus, jobStatus, alertStatus string
+	if err := db.QueryRowContext(ctx, "SELECT status FROM job_targets WHERE job_id=? AND device_id=?", jobID, deviceID).Scan(&targetStatus); err != nil { t.Fatal(err) }
+	if err := db.QueryRowContext(ctx, "SELECT status FROM jobs WHERE id=?", jobID).Scan(&jobStatus); err != nil { t.Fatal(err) }
+	if err := db.QueryRowContext(ctx, "SELECT status FROM job_alerts WHERE id=?", alertID).Scan(&alertStatus); err != nil { t.Fatal(err) }
+	if targetStatus != "indeterminate" || jobStatus != "completed_with_errors" || alertStatus != "resolved" {
+		t.Fatalf("unexpected indeterminate resolution: target=%q job=%q alert=%q", targetStatus, jobStatus, alertStatus)
+	}
+	lateResult := "{\"claim_id\":\"33333333-3333-4333-8333-333333333333\",\"status\":\"succeeded\",\"result\":{\"message\":\"late success\"}}"
+	performRequest(t, handler, http.MethodPost,
+		"/api/v1/devices/"+deviceID+"/jobs/"+jobID+"/result", deviceToken, lateResult, http.StatusConflict)
+	var eventCount int
+	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM audit_log WHERE event_type='job.target.marked_indeterminate' AND target_id=?", jobID+"/"+deviceID).Scan(&eventCount); err != nil || eventCount != 1 {
+		t.Fatalf("indeterminate resolution audit missing: rows=%d err=%v", eventCount, err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM audit_log WHERE event_type='job.execution.result' AND target_id=?", jobID).Scan(&eventCount); err != nil || eventCount != 0 {
+		t.Fatalf("late agent result must not be audited as accepted: rows=%d err=%v", eventCount, err)
+	}
+}
+
+func TestJobAlertRetryRequiresSafeActionAndStoppedConfirmation(t *testing.T) {
+	db, err := openDatabase(filepath.Join(t.TempDir(), "job-alert-retry.db"))
+	if err != nil { t.Fatal(err) }
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := migrate(ctx, db); err != nil { t.Fatal(err) }
+
+	const jobID = "job-alert-retry"
+	const deviceID = "device-alert-retry"
+	const claimID = "44444444-4444-4444-8444-444444444444"
+	const deviceToken = "retry-device-token"
+	seedOverdueJobAlertFixture(t, db, jobID, deviceID, "inventory.refresh", "{}", claimID, deviceToken)
+	handler := securityHeaders(routes(&Server{db:db,adminToken:"admin-test-token",jobStaleAfter:time.Minute}))
+	alertID, _, _ := requestJobAlertQueue(t, handler)
+	base := "{\"decision\":\"retry\",\"expected_claim_id\":\"44444444-4444-4444-8444-444444444444\",\"reason\":\"Confirmed the old worker process is no longer running.\"}"
+	performRequest(t, handler, http.MethodPost,
+		"/api/v1/job-alerts/"+strconv.FormatInt(alertID,10)+"/resolve",
+		"admin-test-token", base, http.StatusBadRequest)
+	valid := "{\"decision\":\"retry\",\"expected_claim_id\":\"44444444-4444-4444-8444-444444444444\",\"reason\":\"Confirmed the old worker process is no longer running.\",\"confirm\":true,\"confirm_previous_execution_stopped\":true}"
+	performRequest(t, handler, http.MethodPost,
+		"/api/v1/job-alerts/"+strconv.FormatInt(alertID,10)+"/resolve",
+		"admin-test-token", valid, http.StatusOK)
+	var status string
+	var activeClaim sql.NullString
+	var attempts int
+	if err := db.QueryRowContext(ctx, "SELECT status,claim_id,attempt_count FROM job_targets WHERE job_id=? AND device_id=?", jobID, deviceID).Scan(&status,&activeClaim,&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if status != "queued" || activeClaim.Valid || attempts != 1 {
+		t.Fatalf("safe retry did not create a fresh queued delivery: status=%q claim=%#v attempts=%d", status, activeClaim, attempts)
+	}
+	lateResult := "{\"claim_id\":\"44444444-4444-4444-8444-444444444444\",\"status\":\"succeeded\",\"result\":{\"message\":\"late old result\"}}"
+	performRequest(t, handler, http.MethodPost,
+		"/api/v1/devices/"+deviceID+"/jobs/"+jobID+"/result", deviceToken, lateResult, http.StatusConflict)
+	next := performRequest(t, handler, http.MethodGet,
+		"/api/v1/devices/"+deviceID+"/jobs/next", deviceToken, "", http.StatusOK)
+	var delivery struct {
+		Job *struct {
+			ClaimID string `json:"claim_id"`
+			Attempt int `json:"attempt"`
+		} `json:"job"`
+	}
+	if err := json.Unmarshal(next,&delivery); err != nil { t.Fatal(err) }
+	if delivery.Job == nil || delivery.Job.ClaimID == claimID || delivery.Job.Attempt != 2 {
+		t.Fatalf("retry did not issue a new claim generation: %s", next)
+	}
+	var retryAudit int
+	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM audit_log WHERE event_type='job.target.retry_authorized' AND target_id=?", jobID+"/"+deviceID).Scan(&retryAudit); err != nil || retryAudit != 1 {
+		t.Fatalf("retry authorization audit missing: rows=%d err=%v", retryAudit, err)
+	}
+}
+
+func TestJobAlertRetryRejectsNonIdempotentActions(t *testing.T) {
+	db, err := openDatabase(filepath.Join(t.TempDir(), "job-alert-no-retry.db"))
+	if err != nil { t.Fatal(err) }
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := migrate(ctx, db); err != nil { t.Fatal(err) }
+
+	const jobID = "job-alert-no-retry"
+	const deviceID = "device-alert-no-retry"
+	const claimID = "55555555-5555-4555-8555-555555555555"
+	seedOverdueJobAlertFixture(t, db, jobID, deviceID, "device.reboot", "{}", claimID, "no-retry-device-token")
+	handler := securityHeaders(routes(&Server{db:db,adminToken:"admin-test-token",jobStaleAfter:time.Minute}))
+	alertID, _, queue := requestJobAlertQueue(t, handler)
+	if !strings.Contains(queue, "\"retry_allowed\":false") {
+		t.Fatalf("non-idempotent action was exposed as retryable: %s", queue)
+	}
+	body := "{\"decision\":\"retry\",\"expected_claim_id\":\"55555555-5555-4555-8555-555555555555\",\"reason\":\"Confirmed previous execution stopped before retry request.\",\"confirm\":true,\"confirm_previous_execution_stopped\":true}"
+	raw := performRequest(t, handler, http.MethodPost,
+		"/api/v1/job-alerts/"+strconv.FormatInt(alertID,10)+"/resolve",
+		"admin-test-token", body, http.StatusConflict)
+	if !strings.Contains(string(raw), "\"retry_not_safe\"") {
+		t.Fatalf("non-idempotent retry was not explicitly blocked: %s", raw)
+	}
+	var status string
+	if err := db.QueryRowContext(ctx, "SELECT status FROM job_targets WHERE job_id=? AND device_id=?", jobID, deviceID).Scan(&status); err != nil || status != "running" {
+		t.Fatalf("blocked retry changed target state: status=%q err=%v", status, err)
+	}
+}
+
+func TestSafeJobRetryClassification(t *testing.T) {
+	cases := []struct {
+		action, payload string
+		want bool
+	}{
+		{"inventory.refresh", "{}", true},
+		{"service.control", "{\"service_name\":\"spooler\",\"operation\":\"start\"}", true},
+		{"service.control", "{\"service_name\":\"spooler\",\"operation\":\"disable\"}", true},
+		{"service.control", "{\"service_name\":\"spooler\",\"operation\":\"restart\"}", false},
+		{"patch.install", "{}", false},
+		{"device.reboot", "{}", false},
+		{"agent.update", "{}", false},
+	}
+	for _, item := range cases {
+		got, _ := safeJobRetry(item.action, []byte(item.payload))
+		if got != item.want {
+			t.Errorf("safeJobRetry(%q,%s)=%v, want %v", item.action, item.payload, got, item.want)
+		}
+	}
+}
+
 func TestJobAPIReportsOverdueRunningTargetsWithoutChangingExecutionState(t *testing.T) {
 	db, err := openDatabase(filepath.Join(t.TempDir(), "stale-jobs.db"))
 	if err != nil {
