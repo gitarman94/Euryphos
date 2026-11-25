@@ -716,6 +716,85 @@ func TestEmbeddedBrowserScriptsHaveValidSyntax(t *testing.T) {
 	}
 }
 
+func TestNetworkInventoryNormalizesDHCPAndDeviceDetailReturnsIt(t *testing.T) {
+	db, err := openDatabase(filepath.Join(t.TempDir(), "dhcp.db"))
+	if err != nil { t.Fatal(err) }
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := migrate(ctx, db); err != nil { t.Fatal(err) }
+	if _, err := db.Exec("INSERT INTO devices(id,hostname,status) VALUES('dhcp-device','windows-host','approved')"); err != nil { t.Fatal(err) }
+	payload := []byte(`{
+		"default_gateway":"192.168.50.1",
+		"dns_servers":["192.168.50.1","1.1.1.1"],
+		"interfaces":[{"name":"Ethernet","index":12,"mac_address":"00-11-22-33-44-55","connection_type":"ethernet","status":"up","addresses":["192.168.50.22/24"]}],
+		"dhcp_interfaces":[{"name":"Ethernet","interface_index":12,"dhcp_enabled":true,"dhcp_server":"192.168.50.1","dhcp_lease_expires":"2026-11-25T12:00:00Z"}]
+	}`)
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil { t.Fatal(err) }
+	server := &Server{db:db}
+	if err := server.applyNetworkInventory(ctx, tx, "dhcp-device", payload, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		tx.Rollback()
+		t.Fatalf("apply network inventory: %v",err)
+	}
+	if err := tx.Commit(); err != nil { t.Fatal(err) }
+	var dhcpEnabled int
+	var dhcpServer, lease, gateway, dns string
+	if err := db.QueryRow(`SELECT n.dhcp_enabled,n.dhcp_server,n.dhcp_lease_expires,d.default_gateway,d.dns_servers_json
+		FROM device_network_interfaces n JOIN devices d ON d.id=n.device_id WHERE n.device_id='dhcp-device'`).
+		Scan(&dhcpEnabled,&dhcpServer,&lease,&gateway,&dns); err != nil {
+		t.Fatal(err)
+	}
+	if dhcpEnabled != 1 || dhcpServer != "192.168.50.1" || lease != "2026-11-25T12:00:00Z" ||
+		gateway != "192.168.50.1" || !strings.Contains(dns,"1.1.1.1") {
+		t.Fatalf("normalized network data mismatch: dhcp=%d server=%q lease=%q gateway=%q dns=%q",
+			dhcpEnabled,dhcpServer,lease,gateway,dns)
+	}
+	handler := securityHeaders(routes(&Server{db:db,adminToken:"admin-test-token"}))
+	detail := performRequest(t,handler,http.MethodGet,"/api/v1/devices/dhcp-device","admin-test-token","",http.StatusOK)
+	for _, expected := range []string{`"network_interfaces"`,`"dhcp_enabled":true`,`"dhcp_server":"192.168.50.1"`,`"dhcp_lease_expires":"2026-11-25T12:00:00Z"`} {
+		if !strings.Contains(string(detail),expected) { t.Fatalf("device detail missing %s: %s",expected,detail) }
+	}
+}
+
+func TestMigrationAddsDHCPColumnsToExistingNetworkTable(t *testing.T) {
+	db, err := openDatabase(filepath.Join(t.TempDir(), "old-network.db"))
+	if err != nil { t.Fatal(err) }
+	defer db.Close()
+	_, err = db.Exec(`CREATE TABLE devices (
+		id TEXT PRIMARY KEY, hostname TEXT NOT NULL DEFAULT '', os_family TEXT NOT NULL DEFAULT '',
+		os_version TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending', token_hash TEXT,
+		last_seen TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`)
+	if err != nil { t.Fatal(err) }
+	_, err = db.Exec(`CREATE TABLE device_network_interfaces (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+		interface_key TEXT NOT NULL,name TEXT NOT NULL DEFAULT '',mac_address TEXT NOT NULL DEFAULT '',
+		connection_type TEXT NOT NULL DEFAULT '',state TEXT NOT NULL DEFAULT '',
+		addresses_json TEXT NOT NULL DEFAULT '[]',mtu INTEGER,observed_at TEXT NOT NULL,
+		UNIQUE(device_id,interface_key)
+	)`)
+	if err != nil { t.Fatal(err) }
+	ctx,cancel:=context.WithTimeout(context.Background(),10*time.Second)
+	defer cancel()
+	if err:=migrate(ctx,db);err!=nil { t.Fatalf("upgrade old network table: %v",err) }
+	columns:=map[string]bool{}
+	rows,err:=db.Query("PRAGMA table_info(device_network_interfaces)")
+	if err!=nil { t.Fatal(err) }
+	defer rows.Close()
+	for rows.Next() {
+		var cid,notNull,primaryKey int
+		var name,dataType string
+		var defaultValue sql.NullString
+		if err:=rows.Scan(&cid,&name,&dataType,&notNull,&defaultValue,&primaryKey);err!=nil { t.Fatal(err) }
+		columns[name]=true
+	}
+	for _,name:=range []string{"dhcp_enabled","dhcp_server","dhcp_lease_expires"} {
+		if !columns[name] { t.Fatalf("migration did not add %s: %#v",name,columns) }
+	}
+}
+
 func performRequest(t *testing.T, handler http.Handler, method, path, token, body string, expectedStatus int) []byte {
 	t.Helper()
 	var requestBody *bytes.Reader
