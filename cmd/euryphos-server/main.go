@@ -21,8 +21,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 	"syscall"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
