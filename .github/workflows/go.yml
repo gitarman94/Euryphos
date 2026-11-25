@@ -25,6 +25,8 @@ jobs:
         run: go test ./...
       - name: Run vet
         run: go vet ./...
+      - name: Check Debian installer shell syntax
+        run: bash -n scripts/install.sh
       - name: Build server
         run: go build -trimpath ./cmd/euryphos-server
       - name: Upload resolved module metadata
