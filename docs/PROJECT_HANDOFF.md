@@ -115,9 +115,10 @@ Backups must use SQLite's online backup API or a tested quiesced procedure. A li
 - `device_duplicate_candidates`: reviewable possible duplicate pairs.
 - `machine_groups`, `device_group_memberships`: static/dynamic machine groups and resolved membership.
 - `jobs`, `job_targets`, `job_group_targets`: parent jobs, per-device execution state, and immutable group-selection snapshots. Each target stores a unique current `claim_id` plus an incrementing `attempt_count`; this identifies delivery generations and prevents a delayed result from an older claim from overwriting a newer attempt.
-- `audit_log`: initial operational events.
+- `job_alerts`: durable, claim-specific overdue-heartbeat review records. Each record moves through `open`, `acknowledged`, `recovered`, or `resolved`; a later delivery claim creates a separate alert identity.
+- `audit_log`: operational events, including alert creation/recovery/closure and administrator acknowledgement/resolution decisions.
 - `admin_sessions`: hashed server-side browser sessions and CSRF material.
-- `schema_migrations`: startup schema marker table. The schema is defined only in Go in `migrate()`; there is no standalone SQL migration file or second schema copy. The current startup routine creates missing tables and indexes and additively adds missing columns, with markers through version **13**. This is intentionally an in-code, idempotent schema initializer for the ground-up product. Future upgrades must preserve existing device rows, identifiers, credentials, inventory, groups, memberships, jobs, job outcomes, audit records, and sessions. Do not drop, truncate, recreate, or reset populated tables during an ordinary application upgrade. Any non-additive data transformation requires an explicit tested conversion and a verified backup/restore path before it can ship.
+- `schema_migrations`: startup schema marker table. The schema is defined only in Go in `migrate()`; there is no standalone SQL migration file or second schema copy. The current startup routine creates missing tables and indexes and additively adds missing columns, with markers through version **14**. This is intentionally an in-code, idempotent schema initializer for the ground-up product. Future upgrades must preserve existing device rows, identifiers, credentials, inventory, groups, memberships, jobs, job outcomes, audit records, and sessions. Do not drop, truncate, recreate, or reset populated tables during an ordinary application upgrade. Any non-additive data transformation requires an explicit tested conversion and a verified backup/restore path before it can ship.
 
 JSON is retained for extensible provider payloads, not as a substitute for typed columns on frequently queried facts. Never create columns from arbitrary client-supplied field names. Timestamps are stored in UTC. Child-table replacement must respect collection status: unsupported, unavailable, failed, or permission-denied collection must not erase last-known good records.
 
@@ -159,7 +160,7 @@ Current server-derived presence values include online, offline, never-connected,
 
 ### Audit
 
-Initial audit coverage includes administrator login success/failure, enrollment, approval/revocation, group mutation, job creation/results, and duplicate merges. This is an operational audit foundation only. It is not immutable, tamper-evident, retention-governed, or compliance-complete.
+Initial audit coverage includes administrator login success/failure, enrollment, approval/revocation, group mutation, job creation/results, duplicate merges, and the job-alert lifecycle (`job.alert.overdue`, `job.alert.acknowledged`, `job.alert.recovered`, `job.alert.closed`, `job.target.marked_indeterminate`, and `job.target.retry_authorized`). This is an operational audit foundation only. It is not immutable, tamper-evident, retention-governed, or compliance-complete.
 
 ### Groups and fleet targeting
 
@@ -192,11 +193,17 @@ The agent persists `pending_job` in its existing configuration file with phases 
 
 The administrator API now exposes the most recent target activity timestamp as `updated_at` in each job detail execution and `last_updated_at` in the paginated job list. The browser Jobs list and per-device job detail display these values, allowing an operator to see the last server-confirmed heartbeat/result time.
 
-**Stale-heartbeat visibility:** `EURYPHOS_JOB_STALE_SECONDS` defaults to 180 seconds and accepts 60–86400. The API returns `stale_running` in the job list and `heartbeat_state=current|overdue|not_applicable` per execution in job details. The browser shows the overdue count and heartbeat state beside the real execution status. This is a calculated read-only flag; it does not alter `job_targets.status`, terminate a process, cancel work, or requeue a target. An overdue heartbeat means "needs operator review", not proof that the action stopped.
+**Stale-heartbeat visibility:** `EURYPHOS_JOB_STALE_SECONDS` defaults to 180 seconds and accepts 60–86400. The Jobs API returns `stale_running` and `last_updated_at`; job detail returns `heartbeat_state=current|overdue|not_applicable` and the target `updated_at`. An overdue heartbeat means "needs operator review", not proof that the action stopped. This derived state never terminates a process, cancels work, or automatically requeues a running target.
 
-**Remaining limitation:** no notification, persistent `stalled` state, or administrator resolution/retry workflow exists yet. A running target is never automatically requeued based only on an old timestamp, because the original action may still be executing on an unreachable endpoint. If an agent is permanently lost or its local config is deleted, the target can remain `running` indefinitely; the operator can now identify old heartbeats but must resolve them through a future explicit workflow.
+**Administrator overdue-job workflow (schema version 14):** `job_alerts` stores one durable alert per `(job_id, device_id, claim_id)`. The authenticated `GET /api/v1/job-alerts` endpoint materializes up to 500 newly detected overdue alerts per request, reconciles active alert records in batches of 500, and returns a paginated queue with open/acknowledged counts and the retry classification. The console's Jobs navigation displays an active-alert badge and the Jobs view has an overdue review queue. The console refreshes the badge periodically; the queue is also loaded when Jobs is opened. This is an in-console, polling-based notification only: there is no email, push, webhook, or independent background alert scheduler.
 
-This is an incremental attempt identity, journal, heartbeat and result-deduplication safeguard, **not** exactly-once execution or a complete retry system. The agent does not prove whether a partially executed non-idempotent operation took effect before an outage. Bounded retry/backoff, per-action retry classification, explicit job expiry/cancellation, stale-running administration, and robust restart/network-partition reconciliation remain open. The 10-minute timeout applies only to unacknowledged `received` claims, not long-running `running` actions.
+An administrator can acknowledge an alert with a required reason. Acknowledgement records review and audit evidence but deliberately leaves the target's execution status as `running`. When a same-claim heartbeat resumes, the alert is marked `recovered`; when the claim or target state changes, the alert is closed. Each lifecycle transition is recorded in `audit_log`.
+
+Resolution requires the alert ID, the exact expected claim ID, an explicit confirmation flag, and a reason. `mark_indeterminate` changes the target to `indeterminate` and records an audit event. It does **not** stop the endpoint process or clear its local `pending_job` journal. A late result from that claim is rejected with HTTP 409. The administrator must establish the execution outcome through endpoint inspection or other operational evidence.
+
+Manual retry is limited to `inventory.refresh` and `service.control` operations `start`, `stop`, `enable`, and `disable`. It additionally requires an explicit administrator confirmation that the previous execution has stopped and a recorded reason. `service.control restart`, patch/software installation or removal, configuration changes, reboot/shutdown, agent update, and every unclassified action are not retryable. Retry clears the old claim and queues a fresh attempt; the next claim receives a new ID and increments the attempt number. Delayed results from the old claim remain rejected. This classification is intentionally conservative and must be expanded only with action-specific idempotency evidence.
+
+The job lifecycle is still **not** exactly-once execution or a complete retry system. The server cannot prove whether an endpoint that lost connectivity completed a side effect before the last heartbeat. Explicit operator acknowledgement is not execution recovery. The 10-minute timeout applies only to unacknowledged `received` claims, not long-running `running` actions.
 
 ### Browser console
 
@@ -217,7 +224,8 @@ Administrator-authenticated routes:
 - `POST /api/v1/devices/{id}/approve`, `POST /api/v1/devices/{id}/revoke`.
 - `GET /api/v1/devices`, `GET /api/v1/devices/{id}`, `GET /api/v1/devices/{id}/inventory/history`.
 - `GET /api/v1/devices/{id}/duplicates`, `POST /api/v1/devices/{id}/merge`.
-- `GET /api/v1/jobs` — paginated jobs with target counts, `last_updated_at`, and calculated `stale_running`; `POST /api/v1/jobs`; `GET /api/v1/jobs/{id}` — per-target `updated_at` and `heartbeat_state` (`current`, `overdue`, or `not_applicable`) alongside real execution status/error.
+- `GET /api/v1/jobs` — paginated jobs with target counts, `last_updated_at`, calculated `stale_running`, and indeterminate counts; `POST /api/v1/jobs`; `GET /api/v1/jobs/{id}` — per-target `updated_at` and `heartbeat_state` (`current`, `overdue`, or `not_applicable`) alongside real execution status/error.
+- `GET /api/v1/job-alerts` — paginated overdue review queue; `POST /api/v1/job-alerts/{id}/acknowledge` — record administrator review; `POST /api/v1/job-alerts/{id}/resolve` — mark the outcome indeterminate or request a permitted manual retry.
 - `GET /api/v1/groups`, `POST /api/v1/groups`, `PUT /api/v1/groups/{id}`, `DELETE /api/v1/groups/{id}`.
 - `GET /api/v1/groups/{id}/members`, `POST /api/v1/groups/{id}/members`, `DELETE /api/v1/groups/{id}/members/{deviceID}`.
 - `POST /api/v1/auth/session`, `POST /api/v1/auth/logout`, `GET /api/v1/audit`.
@@ -308,29 +316,33 @@ Fresh install/migration defaults to disabled. When false, the agent must not cal
 
 Use this order unless fresh test evidence reveals a blocking issue. Do not jump to advanced inventory or UI work while the execution path is unreliable.
 
-### P0 — Verify the newest changes
+### P0 — Verify the latest alert-workflow changes
 
-1. Check current main branch heads and Actions for both repositories.
-2. Confirm server CI after job lease recovery, the regression tests, schema version 12, and server-side reserved service-name rejection.
-3. Confirm agent CI after the case-insensitive `systemctl` rejection fix.
-4. Fix only demonstrated failures. Re-run Go formatting, `go test ./...`, `go vet ./...`, and builds.
-5. Update both handoff documents with exact run IDs, commits, and results. Do not write “passes” until CI evidence exists.
+1. Check the current server and agent main-branch heads and the newest GitHub Actions runs.
+2. Confirm CI for the server alert API, SQLite schema version 14, new overdue-alert regression tests, completion aggregation, and console script. Run formatting, `go test ./...`, `go vet ./...`, installer shell syntax validation, and the server build.
+3. Confirm the agent's existing persistent-journal and restart tests remain green; do not clear a stale local journal merely because the server has marked a target indeterminate.
+4. Fix only demonstrated failures and update both handoff documents with exact verified commits, run IDs, and results. Do not write “passes” until CI evidence exists.
 
-### P1 — Make job delivery/recovery production-grade
+### P1 — Run the complete server-agent workflow on real Linux and Windows machines
 
-The 10-minute receive lease is a narrow first repair, not the final job lifecycle. Implement and test:
+This is the next engineering priority after the alert workflow is verified in CI. Use disposable VMs and a test server/database. For each OS, prove:
 
-- Explicit target lifecycle and timestamps for queued, dispatched/received, running, progress, succeeded, failed, cancelled, expired, and verification-failed states.
-- Attempt number, delivery/lease ID, lease expiry, start/heartbeat/progress, and result idempotency key.
-- Running-job heartbeat is now renewed through the same-claim `started` result; the API and console expose the last server-confirmed target activity time.
-- Operator notifications and a visible `stalled/indeterminate` presentation for targets whose read-only `heartbeat_state` is `overdue`, plus an administrator resolution/retry workflow. The current calculated flag is not persisted as job state and must not automatically requeue a running non-idempotent action.
-- Recovery after endpoint restart, network loss, server restart, and a job that was received but not reported.
-- Explicit expiry/deadline and cancellation rules.
-- Bounded retry/backoff/jitter, per-action retry classification, dead-letter/manual review.
-- Duplicate delivery handling. Define which actions are idempotent and make non-idempotent actions safe or non-retriable.
-- Keep audit evidence for each attempt, recovery, cancellation, and final result.
-- Avoid a whole-fleet scan on each endpoint poll; use device/time indexes and bounded batches.
-- Add a real server+agent protocol test for disconnect during execution, process restart, duplicate result, stale lease, and partial fleet job completion.
+- Enrollment, approval, device heartbeat, and all five current inventory categories.
+- A safe typed action reaches the endpoint, is started, executes, and reports its real result.
+- Long-running heartbeat renewal; endpoint/network interruption; agent restart with each persisted journal phase; server restart; lost result response and retry; late/stale claim rejection.
+- Overdue alert detection, acknowledgement, heartbeat recovery, indeterminate resolution, and a manual retry only after independently verifying that the prior process stopped.
+- No duplicate action execution when a result response is lost or the endpoint restarts. Capture logs and audit rows for each test.
+
+Record exact OS edition/version, agent/server commits, test sequence, and evidence. Cross-builds and unit tests are not substitutes for runtime tests.
+
+### P2 — Complete job lifecycle safety before patch deployment
+
+- Explicit expiry/deadline and cancellation rules; documented state transitions and operator expectations.
+- Bounded retry/backoff/jitter and action-specific idempotency classification beyond the narrow current manual retry allowlist.
+- Protocol compatibility/version negotiation and recovery tests for concurrent fleet jobs.
+- Operational handling for unreachable endpoints, stale local journals, and administrator decisions without silently discarding uncertain outcomes.
+- Keep audit evidence for each delivery attempt, recovery, cancellation, manual retry, and final result.
+- Avoid whole-fleet scans; retain indexes and bounded query/processing batches.
 
 Do not claim exactly-once delivery. Design honestly around at-least-once delivery with idempotency/deduplication.
 
@@ -510,12 +522,11 @@ When continuing this work after chat history loss:
 
 ### Immediate next task
 
-1. Add an operator notification/queue for overdue targets rather than relying only on the Jobs page warning and overdue count. Preserve the current read-only semantics: the real status remains `running` and no automatic requeue occurs.
-2. Implement administrator resolution for overdue/stale claims with confirmation, warnings, audit events, and retry restrictions based on action idempotency. A stale local agent journal returning HTTP 409 must not be silently cleared.
-3. Add protocol tests for heartbeat loss, job deadline, agent crash during execution, server restart, stale claim, and resolution/recovery.
-4. Execute real server + agent tests on disposable Linux and Windows VMs: enrollment, full inventory, safe service control, interruption, lost result response, reconnect, and stale-claim behavior.
-5. Complete first server release and Debian 13 Proxmox fresh install, upgrade, failed-upgrade rollback, reboot, backup, and restore qualification.
-6. Keep patch discovery and installation behind verified running-job recovery and per-action retry safety.
+1. Verify the latest server alert-workflow commits and regression tests through GitHub Actions; update both handoff documents with exact evidence.
+2. Run the complete server-agent workflow on disposable Linux and Windows VMs, including enrollment, full inventory, typed action execution, heartbeat loss, agent/server restart, result retry, stale claim, overdue alert, and manual resolution.
+3. Fix only failures demonstrated by those real-platform tests. Preserve uncertain agent journals and never replay non-idempotent work without a verified action-specific safety rule.
+4. Complete first server release and Debian 13 Proxmox fresh install, upgrade, failed-upgrade rollback, reboot, backup, and restore qualification.
+5. Keep patch discovery and installation deferred until the real Linux/Windows job lifecycle and recovery behavior are verified.
 
 ---
 
