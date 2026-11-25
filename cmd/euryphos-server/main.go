@@ -1516,7 +1516,35 @@ func (s *Server) deviceDetail(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	if err:=inventoryRows.Err();err!=nil { write(w,http.StatusInternalServerError,response{"error":"inventory_read_failed"});return }
-	write(w, http.StatusOK, response{"device":device,"inventory":inventory})
+	interfaceRows, err := s.db.QueryContext(r.Context(), `SELECT interface_key,name,mac_address,connection_type,state,addresses_json,
+		dhcp_enabled,dhcp_server,dhcp_lease_expires,mtu,observed_at
+		FROM device_network_interfaces WHERE device_id=? ORDER BY name COLLATE NOCASE`, r.PathValue("id"))
+	if err != nil {
+		write(w,http.StatusInternalServerError,response{"error":"network_interfaces_read_failed"})
+		return
+	}
+	defer interfaceRows.Close()
+	networkInterfaces := []map[string]any{}
+	for interfaceRows.Next() {
+		var key,name,mac,connectionType,state,addresses,dhcpServer,leaseExpires,observedAt string
+		var dhcpEnabled int
+		var mtu sql.NullInt64
+		if err := interfaceRows.Scan(&key,&name,&mac,&connectionType,&state,&addresses,&dhcpEnabled,&dhcpServer,&leaseExpires,&mtu,&observedAt); err != nil {
+			write(w,http.StatusInternalServerError,response{"error":"network_interfaces_read_failed"})
+			return
+		}
+		networkInterfaces = append(networkInterfaces,map[string]any{
+			"interface_key":key,"name":name,"mac_address":mac,"connection_type":connectionType,
+			"state":state,"addresses":json.RawMessage(addresses),"dhcp_enabled":dhcpEnabled!=0,
+			"dhcp_server":dhcpServer,"dhcp_lease_expires":leaseExpires,"mtu":mtu,
+			"observed_at":observedAt,
+		})
+	}
+	if err := interfaceRows.Err(); err != nil {
+		write(w,http.StatusInternalServerError,response{"error":"network_interfaces_read_failed"})
+		return
+	}
+	write(w, http.StatusOK, response{"device":device,"inventory":inventory,"network_interfaces":networkInterfaces})
 }
 
 // inventoryHistory returns append-only inventory observations. The cursor is the
