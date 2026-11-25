@@ -8,7 +8,7 @@
 - SQLite storage implementation using the pure-Go `modernc.org/sqlite` driver; PostgreSQL driver/configuration and Compose database service removed.
 - SQLite WAL, foreign keys, a 10-second busy timeout, bounded connection pool, local database path, and restrictive Unix file permissions.
 - Initial schema for devices, categorized inventory, jobs, job targets, and schema version tracking.
-- Enrollment, administrator approval/revocation, device authentication, heartbeat, categorized inventory upload, device listing/detail/history, normalized interface details (including DHCP facts), duplicate review/merge, groups, paginated job history, job creation/claiming, and job-result aggregation endpoints.
+- Enrollment, administrator approval/revocation, device authentication, heartbeat, categorized inventory upload, device listing/detail/history, normalized interface, disk, volume, and service details, duplicate review/merge, groups, paginated job history, job creation/claiming, and job-result aggregation endpoints.
 - Server integration tests now run against the real `modernc.org/sqlite` driver in GitHub Actions and cover enrollment, approval, heartbeat, inventory, job dispatch/results, schema upgrades, typed inventory, group membership, duplicate detection/merge, audit, and history behavior.
 - Docker Compose deployment with a persistent local volume instead of a PostgreSQL container.
 - Updated product, architecture, distribution support matrix, installer audit, and completion-plan documentation.
