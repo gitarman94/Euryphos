@@ -14,6 +14,40 @@ import (
 	"time"
 )
 
+func TestSystemInventoryPreservesLargeIntegerFacts(t *testing.T) {
+	db, err := openDatabase(filepath.Join(t.TempDir(), "numbers.db"))
+	if err != nil { t.Fatal(err) }
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := migrate(ctx, db); err != nil { t.Fatal(err) }
+	if _, err := db.Exec("INSERT INTO devices(id) VALUES('device-numeric')"); err != nil { t.Fatal(err) }
+	payload, err := json.Marshal(map[string]any{
+		"hostname": "numeric-host", "architecture": "amd64", "uptime_seconds": 12345.125,
+		"hardware": map[string]any{"physical_cores": 12, "logical_processors": 24},
+		"memory": map[string]any{"total_bytes": int64(17179869185)},
+		"root_filesystem": map[string]any{"total_bytes": int64(1099511627777), "free_bytes": int64(549755813889), "available_bytes": int64(549755813888)},
+	})
+	if err != nil { t.Fatal(err) }
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil { t.Fatal(err) }
+	if err := (&Server{}).applySystemInventory(ctx, tx, "device-numeric", payload, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		tx.Rollback()
+		t.Fatalf("normalize system inventory: %v", err)
+	}
+	if err := tx.Commit(); err != nil { t.Fatal(err) }
+	var memory, total, free, available int64
+	var uptime float64
+	var cores, threads int
+	if err := db.QueryRow("SELECT memory_total_bytes,root_total_bytes,root_free_bytes,root_available_bytes,uptime_seconds,cpu_physical_cores,cpu_logical_processors FROM devices WHERE id='device-numeric'").Scan(&memory, &total, &free, &available, &uptime, &cores, &threads); err != nil { t.Fatal(err) }
+	if memory != 17179869185 || total != 1099511627777 || free != 549755813889 || available != 549755813888 {
+		t.Fatalf("integer byte facts lost precision: memory=%d total=%d free=%d available=%d", memory, total, free, available)
+	}
+	if uptime != 12345.125 || cores != 12 || threads != 24 {
+		t.Fatalf("numeric system facts normalized incorrectly: uptime=%v cores=%d threads=%d", uptime, cores, threads)
+	}
+}
+
 func TestConnectionState(t *testing.T) {
 	s := &Server{onlineGrace: time.Minute}
 	if got := s.connectionState(sql.NullString{}); got != "never_connected" {
