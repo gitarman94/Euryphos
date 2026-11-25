@@ -14,11 +14,13 @@ DATA_DIR="/var/lib/euryphos"
 BACKUP_DIR="${DATA_DIR}/backups"
 SERVICE="euryphos.service"
 MODE="${1:-install}"
+INSTALLER_REVISION="2026-11-25.2"
 
 log() { printf '[euryphos] %s\n' "$*"; }
 die() { printf '[euryphos] ERROR: %s\n' "$*" >&2; exit 1; }
 
 [[ "$MODE" == "install" || "$MODE" == "upgrade" ]] || die "Usage: install.sh [install|upgrade]"
+log "Installer revision ${INSTALLER_REVISION}."
 
 [[ "${EUID}" -eq 0 ]] || die "Run as root inside the Debian 13 Proxmox CT."
 [[ -r /etc/os-release ]] || die "Cannot identify the operating system."
@@ -241,7 +243,7 @@ esac
 
 BACKUP_PATH=""
 if [[ -s "$DB_PATH" ]]; then
-  BACKUP_PATH="\${BACKUP_DIR}/euryphos-$(date -u +%Y%m%dT%H%M%SZ)-\${VERSION_DIR_NAME}.sqlite"
+  BACKUP_PATH="${BACKUP_DIR}/euryphos-$(date -u +%Y%m%dT%H%M%SZ)-${VERSION_DIR_NAME}.sqlite"
   log "Creating a consistent SQLite backup at $BACKUP_PATH."
   if ! sqlite3 "$DB_PATH" ".backup '$BACKUP_PATH'"; then
     if [[ "$SERVICE_WAS_ACTIVE" -eq 1 ]]; then systemctl start "$SERVICE" || true; fi
