@@ -2419,6 +2419,8 @@ func validServiceControlPayload(payload []byte) bool {
 	if err:=json.Unmarshal(payload,&request);err!=nil{return false}
 	name:=strings.TrimSpace(request.ServiceName)
 	if len(name)<1 || len(name)>256{return false}
+	first:=name[0]
+	if !(first>='a'&&first<='z'||first>='A'&&first<='Z'||first>='0'&&first<='9'){return false}
 	for _,char:=range name{
 		if !(char>='a'&&char<='z'||char>='A'&&char<='Z'||char>='0'&&char<='9'||strings.ContainsRune("._@:-",char)){
 			return false
