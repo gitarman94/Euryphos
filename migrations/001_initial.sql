@@ -141,6 +141,7 @@ CREATE TABLE IF NOT EXISTS device_network_interfaces (
     dhcp_enabled INTEGER NOT NULL DEFAULT 0,
     dhcp_server TEXT NOT NULL DEFAULT '',
     dhcp_lease_expires TEXT NOT NULL DEFAULT '',
+    dhcp_lease_expiry_estimated INTEGER NOT NULL DEFAULT 0,
     mtu INTEGER,
     observed_at TEXT NOT NULL,
     UNIQUE(device_id, interface_key)
@@ -232,3 +233,4 @@ INSERT OR IGNORE INTO schema_migrations(version) VALUES (5);
 INSERT OR IGNORE INTO schema_migrations(version) VALUES (6);
 INSERT OR IGNORE INTO schema_migrations(version) VALUES (7);
 INSERT OR IGNORE INTO schema_migrations(version) VALUES (8);
+INSERT OR IGNORE INTO schema_migrations(version) VALUES (9);
