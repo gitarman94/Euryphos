@@ -31,6 +31,7 @@ type Server struct {
 	db                      *sql.DB
 	adminToken, enrollToken string
 	onlineGrace             time.Duration
+	jobStaleAfter           time.Duration
 	cookieSecure            bool
 }
 
@@ -74,7 +75,16 @@ func run() error {
 		}
 		graceSeconds = parsed
 	}
+	jobStaleSeconds := 180
+	if raw := os.Getenv("EURYPHOS_JOB_STALE_SECONDS"); raw != "" {
+		parsed, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || parsed < 60 || parsed > 86400 {
+			return errors.New("EURYPHOS_JOB_STALE_SECONDS must be between 60 and 86400")
+		}
+		jobStaleSeconds = parsed
+	}
 	s := &Server{db: db, adminToken: admin, enrollToken: enroll, onlineGrace: time.Duration(graceSeconds) * time.Second,
+		jobStaleAfter: time.Duration(jobStaleSeconds) * time.Second,
 		cookieSecure: !strings.EqualFold(env("EURYPHOS_COOKIE_SECURE", "true"), "false")}
 	addr := env("EURYPHOS_LISTEN", ":8080")
 	log.Printf("Euryphos Go server listening on %s (SQLite: %s)", addr, env("EURYPHOS_DB_PATH", "./data/euryphos.db"))
@@ -2782,6 +2792,14 @@ func (s *Server) jobResult(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusOK, response{"status": "recorded"})
 }
 
+func (s *Server) jobStaleCutoffModifier() string {
+	grace := s.jobStaleAfter
+	if grace < time.Minute {
+		grace = 180 * time.Second
+	}
+	return fmt.Sprintf("-%d seconds", int(grace.Seconds()))
+}
+
 func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 	page, pageSize := 1, 50
 	if raw := r.URL.Query().Get("page"); raw != "" {
@@ -2811,10 +2829,11 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 		COALESCE(sum(CASE WHEN t.status='failed' THEN 1 ELSE 0 END),0),
 		COALESCE(sum(CASE WHEN t.status='running' THEN 1 ELSE 0 END),0),
 		COALESCE(sum(CASE WHEN t.status='queued' OR t.status='received' THEN 1 ELSE 0 END),0),
+		COALESCE(sum(CASE WHEN t.status='running' AND t.updated_at < datetime('now', ?) THEN 1 ELSE 0 END),0),
 		COALESCE(MAX(t.updated_at), j.created_at)
 		FROM jobs j LEFT JOIN job_targets t ON t.job_id=j.id
 		GROUP BY j.id ORDER BY j.created_at DESC,j.id DESC LIMIT ? OFFSET ?`,
-		pageSize, (page-1)*pageSize)
+		s.jobStaleCutoffModifier(), pageSize, (page-1)*pageSize)
 	if err != nil {
 		write(w, http.StatusInternalServerError, response{"error": "job_list_read_failed"})
 		return
@@ -2823,14 +2842,14 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 	items := []map[string]any{}
 	for rows.Next() {
 		var id, action, status, createdAt, lastUpdatedAt string
-		var targetCount, succeeded, failed, running, pending int
-		if err := rows.Scan(&id,&action,&status,&createdAt,&targetCount,&succeeded,&failed,&running,&pending,&lastUpdatedAt); err != nil {
+		var targetCount, succeeded, failed, running, pending, staleRunning int
+		if err := rows.Scan(&id,&action,&status,&createdAt,&targetCount,&succeeded,&failed,&running,&pending,&staleRunning,&lastUpdatedAt); err != nil {
 			write(w, http.StatusInternalServerError, response{"error": "job_list_read_failed"})
 			return
 		}
 		items = append(items, map[string]any{
 			"id":id,"action":action,"status":status,"created_at":createdAt,"last_updated_at":lastUpdatedAt,
-			"target_count":targetCount,"succeeded":succeeded,"failed":failed,"running":running,"pending":pending,
+			"target_count":targetCount,"succeeded":succeeded,"failed":failed,"running":running,"pending":pending,"stale_running":staleRunning,
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -2850,7 +2869,10 @@ func (s *Server) getJob(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusNotFound, response{"error": "job_not_found"})
 		return
 	}
-	rows, err := s.db.QueryContext(r.Context(), "SELECT device_id, status, error, updated_at FROM job_targets WHERE job_id = ?", r.PathValue("id"))
+	rows, err := s.db.QueryContext(r.Context(), `SELECT device_id, status, error, updated_at,
+		CASE WHEN status='running' AND updated_at < datetime('now', ?) THEN 'overdue'
+			WHEN status='running' THEN 'current' ELSE 'not_applicable' END
+		FROM job_targets WHERE job_id = ?`, s.jobStaleCutoffModifier(), r.PathValue("id"))
 	if err != nil {
 		write(w, http.StatusInternalServerError, response{"error": "database_error"})
 		return
@@ -2858,13 +2880,13 @@ func (s *Server) getJob(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	items := []map[string]any{}
 	for rows.Next() {
-		var deviceID, state, updatedAt string
+		var deviceID, state, updatedAt, heartbeatState string
 		var message sql.NullString
-		if err := rows.Scan(&deviceID, &state, &message, &updatedAt); err != nil {
+		if err := rows.Scan(&deviceID, &state, &message, &updatedAt, &heartbeatState); err != nil {
 			write(w, http.StatusInternalServerError, response{"error": "database_error"})
 			return
 		}
-		items = append(items, map[string]any{"device_id": deviceID, "status": state, "updated_at": updatedAt, "error": message.String})
+		items = append(items, map[string]any{"device_id": deviceID, "status": state, "updated_at": updatedAt, "heartbeat_state": heartbeatState, "error": message.String})
 	}
 	if err := rows.Err(); err != nil {
 		write(w, http.StatusInternalServerError, response{"error": "database_error"})
