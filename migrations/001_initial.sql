@@ -191,6 +191,28 @@ CREATE TABLE IF NOT EXISTS device_storage_volumes (
 CREATE INDEX IF NOT EXISTS idx_storage_volumes_device ON device_storage_volumes(device_id);
 CREATE INDEX IF NOT EXISTS idx_storage_volumes_mount ON device_storage_volumes(mount_point);
 
+CREATE TABLE IF NOT EXISTS device_services (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    service_key TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    display_name TEXT NOT NULL DEFAULT '',
+    manager TEXT NOT NULL DEFAULT '',
+    load_state TEXT NOT NULL DEFAULT '',
+    active_state TEXT NOT NULL DEFAULT '',
+    sub_state TEXT NOT NULL DEFAULT '',
+    start_type TEXT NOT NULL DEFAULT '',
+    account_name TEXT NOT NULL DEFAULT '',
+    executable_path TEXT NOT NULL DEFAULT '',
+    process_id INTEGER,
+    description TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT '',
+    observed_at TEXT NOT NULL,
+    UNIQUE(device_id,service_key)
+);
+CREATE INDEX IF NOT EXISTS idx_services_device ON device_services(device_id);
+CREATE INDEX IF NOT EXISTS idx_services_state ON device_services(manager,active_state,start_type);
+
 CREATE TABLE IF NOT EXISTS installed_software (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
@@ -277,3 +299,4 @@ INSERT OR IGNORE INTO schema_migrations(version) VALUES (7);
 INSERT OR IGNORE INTO schema_migrations(version) VALUES (8);
 INSERT OR IGNORE INTO schema_migrations(version) VALUES (9);
 INSERT OR IGNORE INTO schema_migrations(version) VALUES (10);
+INSERT OR IGNORE INTO schema_migrations(version) VALUES (11);
