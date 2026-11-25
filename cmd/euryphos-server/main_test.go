@@ -728,7 +728,7 @@ func TestNetworkInventoryNormalizesDHCPAndDeviceDetailReturnsIt(t *testing.T) {
 		"default_gateway":"192.168.50.1",
 		"dns_servers":["192.168.50.1","1.1.1.1"],
 		"interfaces":[{"name":"Ethernet","index":12,"mac_address":"00-11-22-33-44-55","connection_type":"ethernet","status":"up","addresses":["192.168.50.22/24"]}],
-		"dhcp_interfaces":[{"name":"Ethernet","interface_index":12,"dhcp_enabled":true,"dhcp_server":"192.168.50.1","dhcp_lease_expires":"2026-11-25T12:00:00Z",`"dhcp_lease_expiry_estimated":true`,"dhcp_lease_expiry_estimated":true}]
+		"dhcp_interfaces":[{"name":"Ethernet","interface_index":12,"dhcp_enabled":true,"dhcp_server":"192.168.50.1","dhcp_lease_expires":"2026-11-25T12:00:00Z","dhcp_lease_expiry_estimated":true}]
 	}`)
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil { t.Fatal(err) }
@@ -752,7 +752,7 @@ func TestNetworkInventoryNormalizesDHCPAndDeviceDetailReturnsIt(t *testing.T) {
 	}
 	handler := securityHeaders(routes(&Server{db:db,adminToken:"admin-test-token"}))
 	detail := performRequest(t,handler,http.MethodGet,"/api/v1/devices/dhcp-device","admin-test-token","",http.StatusOK)
-	for _, expected := range []string{`"network_interfaces"`,`"dhcp_enabled":true`,`"dhcp_server":"192.168.50.1"`,`"dhcp_lease_expires":"2026-11-25T12:00:00Z"`} {
+	for _, expected := range []string{`"network_interfaces"`,`"dhcp_enabled":true`,`"dhcp_server":"192.168.50.1"`,`"dhcp_lease_expires":"2026-11-25T12:00:00Z"`,`"dhcp_lease_expiry_estimated":true`} {
 		if !strings.Contains(string(detail),expected) { t.Fatalf("device detail missing %s: %s",expected,detail) }
 	}
 }
