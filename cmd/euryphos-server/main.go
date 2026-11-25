@@ -363,6 +363,7 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (4)`,
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (5)`,
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (6)`,
+		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (7)`,
 	}
 	for _, statement := range statements {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
@@ -430,6 +431,10 @@ func migrate(ctx context.Context, db *sql.DB) error {
 			BEGIN UPDATE devices SET database_id = NEW.rowid WHERE rowid = NEW.rowid; END`,
 		`CREATE INDEX IF NOT EXISTS idx_devices_serial_number ON devices(serial_number)`,
 		`CREATE INDEX IF NOT EXISTS idx_devices_smbios_uuid ON devices(smbios_uuid)`,
+		`CREATE INDEX IF NOT EXISTS idx_devices_smbios_uuid_normalized
+			ON devices(lower(replace(replace(replace(replace(smbios_uuid,'-',''),'{',''),'}',''),' ','')))`,
+		`CREATE INDEX IF NOT EXISTS idx_devices_hardware_identity
+			ON devices(lower(trim(serial_number)),lower(trim(manufacturer)),lower(trim(model)))`,
 		`CREATE INDEX IF NOT EXISTS idx_devices_directory_domain_ou ON devices(directory_domain, organizational_unit)`,
 		`CREATE INDEX IF NOT EXISTS idx_devices_smbios_uuid_normalized ON devices(lower(replace(replace(replace(replace(smbios_uuid,'-',''),'{',''),'}',''),' ','')))`,
 		`CREATE INDEX IF NOT EXISTS idx_devices_hardware_identity ON devices(serial_number COLLATE NOCASE, manufacturer COLLATE NOCASE, model COLLATE NOCASE)`,
