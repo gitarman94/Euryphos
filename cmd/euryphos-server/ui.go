@@ -26,6 +26,11 @@ func (s *Server) consolePage(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(consoleHTML))
 }
 
+func (s *Server) loginJS(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+	_, _ = w.Write([]byte(loginJS))
+}
+
 func (s *Server) consoleJS(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 	_, _ = w.Write([]byte(consoleJS))
