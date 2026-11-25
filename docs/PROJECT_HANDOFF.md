@@ -246,11 +246,15 @@ The following server CI runs completed successfully on 2026-11-25. Each passed `
 - **[45631318715](https://github.com/gitarman94/Euryphos/actions/runs/45631318715)** — console overdue heartbeat display, commit `0a9d32fb40a9ac13cba06214c8bbd441b7febc0a`.
 - **[45631324054](https://github.com/gitarman94/Euryphos/actions/runs/45631324054)** — Debian installer default for `EURYPHOS_JOB_STALE_SECONDS=180`, commit `4caea1f413ca9e88c59030c9d551bd9cd2e689f4`.
 
-The earlier API activity timestamp run **[45630523155](https://github.com/gitarman94/Euryphos/actions/runs/45630523155)** also passed, including the job/target activity timestamp assertions. Handoff synchronization run **[45631440620](https://github.com/gitarman94/Euryphos/actions/runs/45631440620)** passed after these changes. These checks do not execute the installer inside Debian 13 or run a live server/agent deployment.
+The API activity timestamp and earlier handoff synchronization runs **[45630523155](https://github.com/gitarman94/Euryphos/actions/runs/45630523155)** and **[45631440620](https://github.com/gitarman94/Euryphos/actions/runs/45631440620)** also passed.
+
+The source-build test installer change on commit `c53a6540eeb6abb9fbb766180938f35e5bcb0347` passed [run 45644152313](https://github.com/gitarman94/Euryphos/actions/runs/45644152313), including module normalization, tests, vet, installer shell syntax validation, and server build. The following README update passed [run 45644160200](https://github.com/gitarman94/Euryphos/actions/runs/45644160200).
+
+These checks do not execute the installer inside Debian 13 or run a live server/agent deployment.
 
 ### Agent CI
 
-GitHub Actions run **[45630111011](https://github.com/gitarman94/Euryphos-Agent/actions/runs/45630111011)** on agent source commit `333e9c8f5c31057d7a31e701daaf3342bfb0dfb3` completed successfully on 2026-11-25. It passed `go test ./...`, `go vet ./...`, Linux build, Windows amd64 cross-build, and macOS arm64 cross-build. This includes claim-aware result reporting, persistent local job journal, pre-execution start acknowledgement, periodic device/job heartbeats, and bounded four-hour-default job timeout (60 seconds–24 hours). Agent documentation synchronization run **[45631447132](https://github.com/gitarman94/Euryphos-Agent/actions/runs/45631447132)** also passed after the overdue-heartbeat contract was documented. Cross-builds do not certify runtime support on those systems.
+The current agent main commit `4963c7a96cb79e986de2acf20f5edce641a0db41` passed [GitHub Actions run 45638390318](https://github.com/gitarman94/Euryphos-Agent/actions/runs/45638390318) on 2026-11-25. The validate job passed `go test ./...`, `go vet ./...`, Linux build, Windows amd64 cross-build, and macOS arm64 cross-build, including the claim-resolution handshake and regression tests. Later documentation-only commits `731ee3a2ce95fdc65dfa81e6fedf7b24730954c2` and `8b1aa6d8ea89aeb659733baba6c5968525c37869` also passed runs `45643719942` and `45643725887`. Cross-builds do not certify runtime support on those systems.
 
 ### Overdue-job workflow CI validation
 
@@ -334,12 +338,9 @@ Fresh install/migration defaults to disabled. When false, the agent must not cal
 
 Use this order unless fresh test evidence reveals a blocking issue. Do not jump to advanced inventory or UI work while the execution path is unreliable.
 
-### P0 — Verify the latest alert-workflow changes
+### P0 — CI and source validation completed
 
-1. Check the current server and agent main-branch heads and the newest GitHub Actions runs.
-2. Confirm CI for the server alert API, SQLite schema version 14, new overdue-alert regression tests, completion aggregation, and console script. Run formatting, `go test ./...`, `go vet ./...`, installer shell syntax validation, and the server build.
-3. Confirm the agent's existing persistent-journal and restart tests remain green; do not clear a stale local journal merely because the server has marked a target indeterminate.
-4. Fix only demonstrated failures and update both handoff documents with exact verified commits, run IDs, and results. Do not write “passes” until CI evidence exists.
+The current server main branch has passing CI for tests, vet, installer shell syntax, and server build. The current agent main branch has passing tests, vet, Linux build, and Windows/macOS cross-builds. Exact run IDs and commit SHAs are recorded in Section 7. This does not certify a running server/agent deployment on any endpoint OS.
 
 ### P1 — Run the complete server-agent workflow on real Linux and Windows machines
 
@@ -463,39 +464,21 @@ Each OS/release/architecture is independently qualified. Shared package-manager 
 
 ### Install and upgrade
 
-The repository is private, so the bootstrap command must retrieve `scripts/install.sh` with a fine-grained GitHub token that has Contents: read for this repository. The installer then uses the same token to download release metadata and assets. Do not save the GitHub token in the Euryphos environment file.
+The server repository is public. No GitHub token is needed to retrieve the installer or public source. The separate `Euryphos-Agent` repository is currently private and has no supported endpoint installer/release; endpoint installation remains manual source-build and integration testing work.
 
-Run as root inside Debian 13 CT:
+**Current test install (run as root inside a Debian 13 systemd CT):**
 
 ```bash
-set -e
-apt-get update && apt-get install -y ca-certificates curl
-read -rsp "GitHub read-only token: " GITHUB_TOKEN
-printf '\n'
-export GITHUB_TOKEN
-INSTALLER="$(mktemp)"
-trap 'rm -f "$INSTALLER"; unset GITHUB_TOKEN' EXIT
-curl -fsSL \
-  -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-  -H "Accept: application/vnd.github.raw+json" \
-  "https://api.github.com/repos/gitarman94/Euryphos/contents/scripts/install.sh?ref=main" \
-  -o "$INSTALLER"
-bash -n "$INSTALLER"
-GITHUB_TOKEN="$GITHUB_TOKEN" bash "$INSTALLER" install
+apt-get update && apt-get install -y ca-certificates curl && EURYPHOS_SOURCE_BUILD=1 bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/gitarman94/Euryphos/main/scripts/install.sh | bash -s -- install'
 ```
 
-For an upgrade, rerun the same command with final argument `upgrade`. Set `EURYPHOS_VERSION=vX.Y.Z` to pin a release. Push a `v*` tag only after CI passes; the release workflow checks source, cross-builds Linux amd64/arm64, archives the binary + systemd unit + license, and uploads `SHA256SUMS`. A published release is required for the installer.
+With `EURYPHOS_SOURCE_BUILD=1`, the installer installs Debian's `golang-go` package, resolves and pins the current public `main` commit by SHA, downloads that source archive, builds the server for the CT's Linux architecture, and packages the binary, systemd unit, and license locally. It then applies the same SHA-256 package check, atomic versioned installation, secret/config preservation, SQLite backup, service startup, and `/api/health` check as the release path. The Go build toolchain remains installed in the CT. This path is for pre-release testing; it is not an immutable prebuilt release.
 
-The installer requires root, Debian 13, and systemd. It installs deployment utilities `curl`, `jq`, `sqlite3`, `openssl`, and CA certificates. The application itself remains a single Go server process using embedded SQLite; no database daemon is installed.
+The normal installer path (without `EURYPHOS_SOURCE_BUILD=1`) downloads the latest published GitHub release, requires the matching Linux amd64/arm64 archive and `SHA256SUMS`, and verifies the release checksum before changing the active installation. **No first versioned release exists yet.** The release workflow builds those assets after a `v*` tag is pushed. After a release is published, the standard command can omit the source-build variable.
 
-On first installation the script generates `EURYPHOS_ADMIN_TOKEN` and `EURYPHOS_ENROLLMENT_TOKEN` and writes them once to the root-only environment file. It sets:
-- `EURYPHOS_LISTEN=:8080`.
-- `EURYPHOS_DB_PATH=/var/lib/euryphos/euryphos.db`.
-- `EURYPHOS_AUTO_MIGRATE=true`.
-- `EURYPHOS_COOKIE_SECURE=true`.
-- `EURYPHOS_ONLINE_GRACE_SECONDS=90`.
+For an upgrade, rerun the same source-build command with final argument `upgrade`; this builds the current `main` commit. For a pinned released version, set `EURYPHOS_VERSION=vX.Y.Z` and omit the source-build variable.
 
-Existing values remain unchanged during upgrades. `EURYPHOS_LISTEN` must end in a TCP port for the installer health check. The standard DB path must remain under `/var/lib/euryphos` so the systemd service can write to it and automatic backup/rollback can protect it.
+The installer requires root, Debian 13, and systemd. It installs `curl`, `jq`, `sqlite3`, `openssl`, CA certificates, and (only in source-build mode) `golang-go`. The application itself remains one Go server process with embedded SQLite; no database daemon, Docker, or Compose is installed.
 
 ### Non-data-destructive upgrade contract
 
@@ -540,10 +523,11 @@ When continuing this work after chat history loss:
 
 ### Immediate next task
 
-1. Run the complete server-agent workflow on disposable Linux and Windows VMs, including enrollment, inventory, typed service-control execution, heartbeat loss, agent/server restart, result retry, stale claims, overdue alerts, and manual resolution.
-2. Fix only failures demonstrated by those real-platform tests. Preserve uncertain agent journals and never replay non-idempotent work without a verified action-specific safety rule.
-3. Complete first server release and Debian 13 Proxmox fresh-install, upgrade, failed-upgrade rollback, reboot, backup, and restore qualification.
-4. Keep patch discovery and installation deferred until the real Linux/Windows job lifecycle and recovery behavior are verified.
+1. Run the source-build installer in a disposable Debian 13 Proxmox CT; verify fresh install, health check, reboot persistence, in-place upgrade, forced failed-upgrade rollback, SQLite backup, and restore.
+2. Run the complete server-agent workflow on disposable Linux and Windows VMs, including enrollment, inventory, typed service-control execution, heartbeat loss, agent/server restart, result retry, stale claims, overdue alerts, and manual resolution.
+3. Finish public/reproducible agent distribution and installer work, including deciding when the private agent repository is ready to become public.
+4. Publish the first tagged server release only after the CT install/upgrade/rollback path is qualified.
+5. Keep patch discovery and installation deferred until the real Linux/Windows job lifecycle and recovery behavior is verified.
 ---
 
 ## 13. Product completion definition
