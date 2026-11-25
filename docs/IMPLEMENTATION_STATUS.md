@@ -37,14 +37,14 @@
 
 ## Validation status
 
-GitHub Actions run [45603834980](https://github.com/gitarman94/Euryphos/actions/runs/45603834980), on commit `675b6f33f3263e099f8235bbecdd9f3b3c0189fe`, completed successfully on 2026-11-25. The run passed:
+GitHub Actions run [45604661485](https://github.com/gitarman94/Euryphos/actions/runs/45604661485), on commit `b897c50b775528d61c69da06cfe9e3e5fdc19d00`, completed successfully on 2026-11-25. It passed:
 
 - `go mod tidy`
 - `go test ./...`
 - `go vet ./...`
 - `go build -trimpath ./cmd/euryphos-server`
 
-The passing suite includes legacy SQLite migration, exact 64-bit inventory values, device detail/history, search and presence filters, dynamic AD/Linux-compatible groups, duplicate review and merge, old-token continuity, audit events, and inventory-history fingerprint behavior.
+The passing tests cover legacy SQLite migration, generated device IDs, exact 64-bit inventory values, device detail and history, search and presence filters, AD/Linux-compatible dynamic groups, duplicate candidates and serial fallback, explicit merge and old-token continuity, audit events (including job-result events), and change-only inventory-history behavior.
 
 This validates the tested Go/SQLite code paths. It does not certify production deployment, fleet-scale throughput, backup/restore, trusted-proxy configuration, browser UI, or end-to-end operation with installed endpoint agents.
 
