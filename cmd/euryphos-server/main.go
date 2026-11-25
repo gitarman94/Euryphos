@@ -402,6 +402,8 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_devices_serial_number ON devices(serial_number)`,
 		`CREATE INDEX IF NOT EXISTS idx_devices_smbios_uuid ON devices(smbios_uuid)`,
 		`CREATE INDEX IF NOT EXISTS idx_devices_directory_domain_ou ON devices(directory_domain, organizational_unit)`,
+		`CREATE INDEX IF NOT EXISTS idx_devices_smbios_uuid_normalized ON devices(lower(replace(replace(replace(replace(smbios_uuid,'-',''),'{',''),'}',''),' ','')))`,
+		`CREATE INDEX IF NOT EXISTS idx_devices_hardware_identity ON devices(serial_number COLLATE NOCASE, manufacturer COLLATE NOCASE, model COLLATE NOCASE)`,
 		`CREATE INDEX IF NOT EXISTS idx_devices_os_family_distribution ON devices(os_family, os_distribution, os_distribution_version)`,
 		`CREATE INDEX IF NOT EXISTS idx_devices_last_seen ON devices(last_seen)`,
 		`CREATE INDEX IF NOT EXISTS idx_network_interfaces_mac ON device_network_interfaces(mac_address)`,
@@ -826,6 +828,21 @@ func (s *Server) applySystemInventory(ctx context.Context, tx *sql.Tx, deviceID 
 	hardware := mapValue(data["hardware"])
 	memory := mapValue(data["memory"])
 	root := mapValue(data["root_filesystem"])
+	var oldSerial, oldUUID, oldManufacturer, oldModel string
+	if err := tx.QueryRowContext(ctx, "SELECT serial_number,smbios_uuid,manufacturer,model FROM devices WHERE id=?", deviceID).
+		Scan(&oldSerial,&oldUUID,&oldManufacturer,&oldModel); err != nil { return err }
+	newSerial := usableIdentity(textValue(hardware["serial_number"]))
+	newUUID := normalizeIdentity(textValue(hardware["smbios_uuid"]))
+	if strings.Trim(newUUID,"0")=="" || strings.Trim(newUUID,"f")=="" { newUUID="" }
+	newManufacturer := usableIdentity(textValue(hardware["manufacturer"]))
+	newModel := usableIdentity(textValue(hardware["model"]))
+	oldNormalizedUUID := normalizeIdentity(oldUUID)
+	if strings.Trim(oldNormalizedUUID,"0")=="" || strings.Trim(oldNormalizedUUID,"f")=="" { oldNormalizedUUID="" }
+	identityChanged :=
+		(newSerial!="" && newSerial!=usableIdentity(oldSerial)) ||
+		(newUUID!="" && newUUID!=oldNormalizedUUID) ||
+		(newManufacturer!="" && newManufacturer!=usableIdentity(oldManufacturer)) ||
+		(newModel!="" && newModel!=usableIdentity(oldModel))
 	fields := []any{
 		textValue(data["hostname"]), textValue(data["fqdn"]),
 		textValue(data["os_family"]), textValue(data["os_version"]),
@@ -874,7 +891,10 @@ func (s *Server) applySystemInventory(ctx context.Context, tx *sql.Tx, deviceID 
 		timezone=COALESCE(NULLIF(?,''),timezone), agent_version=COALESCE(NULLIF(?,''),agent_version),
 		last_inventory_at=? WHERE id=?`, append(fields, deviceID)...)
 	if err != nil { return err }
-	return s.recordDuplicateCandidates(ctx, tx, deviceID)
+	if identityChanged {
+		return s.recordDuplicateCandidates(ctx, tx, deviceID)
+	}
+	return nil
 }
 
 func (s *Server) applyNetworkInventory(ctx context.Context, tx *sql.Tx, deviceID string, payload []byte, observedAt string) error {
@@ -974,13 +994,13 @@ func (s *Server) recordDuplicateCandidates(ctx context.Context, tx *sql.Tx, devi
 	if uuidValue == "" && (serial == "" || manufacturer == "" || model == "") { return nil }
 	_, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO device_duplicate_candidates(device_id,candidate_device_id,matched_on,confidence)
 		SELECT ?,id,
-		CASE WHEN ?<>'' AND lower(replace(replace(replace(replace(smbios_uuid,'-',''),'{',''),'}',''),' ','') )=? THEN 'smbios_uuid'
+		CASE WHEN ?<>'' AND lower(replace(replace(replace(replace(smbios_uuid,'-',''),'{',''),'}',''),' ',''))=? THEN 'smbios_uuid'
 		ELSE 'serial_manufacturer_model' END,
 		'high'
 		FROM devices
 		WHERE id<>? AND merged_into IS NULL AND status<>'merged'
 		AND ((?<>'' AND lower(replace(replace(replace(replace(smbios_uuid,'-',''),'{',''),'}',''),' ',''))=?)
-		OR (?<>'' AND ?<>'' AND ?<>'' AND lower(trim(serial_number))=lower(?) AND lower(trim(manufacturer))=lower(?) AND lower(trim(model))=lower(?)))`,
+		OR (?<>'' AND ?<>'' AND ?<>'' AND serial_number=? COLLATE NOCASE AND manufacturer=? COLLATE NOCASE AND model=? COLLATE NOCASE))`,
 		deviceID,uuidValue,uuidValue,deviceID,uuidValue,uuidValue,serial,manufacturer,model,serial,manufacturer,model)
 	return err
 }
