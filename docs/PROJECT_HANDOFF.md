@@ -192,7 +192,9 @@ The agent persists `pending_job` in its existing configuration file with phases 
 
 The administrator API now exposes the most recent target activity timestamp as `updated_at` in each job detail execution and `last_updated_at` in the paginated job list. The browser Jobs list and per-device job detail display these values, allowing an operator to see the last server-confirmed heartbeat/result time.
 
-**Remaining limitation:** the server does not yet calculate or persist a `stalled` state for an overdue running target, notify administrators, or provide a deliberate resolution/retry workflow. A running target is not requeued automatically, because the original action may still be executing on an unreachable endpoint. If an agent is permanently lost or its local config is deleted, the target can remain `running` indefinitely; the timestamp is now visible, but the operator must treat old timestamps as an indication for investigation, not proof that the action stopped.
+**Stale-heartbeat visibility:** `EURYPHOS_JOB_STALE_SECONDS` defaults to 180 seconds and accepts 60–86400. The API returns `stale_running` in the job list and `heartbeat_state=current|overdue|not_applicable` per execution in job details. The browser shows the overdue count and heartbeat state beside the real execution status. This is a calculated read-only flag; it does not alter `job_targets.status`, terminate a process, cancel work, or requeue a target. An overdue heartbeat means "needs operator review", not proof that the action stopped.
+
+**Remaining limitation:** no notification, persistent `stalled` state, or administrator resolution/retry workflow exists yet. A running target is never automatically requeued based only on an old timestamp, because the original action may still be executing on an unreachable endpoint. If an agent is permanently lost or its local config is deleted, the target can remain `running` indefinitely; the operator can now identify old heartbeats but must resolve them through a future explicit workflow.
 
 This is an incremental attempt identity, journal, heartbeat and result-deduplication safeguard, **not** exactly-once execution or a complete retry system. The agent does not prove whether a partially executed non-idempotent operation took effect before an outage. Bounded retry/backoff, per-action retry classification, explicit job expiry/cancellation, stale-running administration, and robust restart/network-partition reconciliation remain open. The 10-minute timeout applies only to unacknowledged `received` claims, not long-running `running` actions.
 
@@ -215,7 +217,7 @@ Administrator-authenticated routes:
 - `POST /api/v1/devices/{id}/approve`, `POST /api/v1/devices/{id}/revoke`.
 - `GET /api/v1/devices`, `GET /api/v1/devices/{id}`, `GET /api/v1/devices/{id}/inventory/history`.
 - `GET /api/v1/devices/{id}/duplicates`, `POST /api/v1/devices/{id}/merge`.
-- `GET /api/v1/jobs` — paginated jobs with target counts and `last_updated_at`; `POST /api/v1/jobs`; `GET /api/v1/jobs/{id}` — per-target `updated_at` alongside status/error.
+- `GET /api/v1/jobs` — paginated jobs with target counts, `last_updated_at`, and calculated `stale_running`; `POST /api/v1/jobs`; `GET /api/v1/jobs/{id}` — per-target `updated_at` and `heartbeat_state` (`current`, `overdue`, or `not_applicable`) alongside real execution status/error.
 - `GET /api/v1/groups`, `POST /api/v1/groups`, `PUT /api/v1/groups/{id}`, `DELETE /api/v1/groups/{id}`.
 - `GET /api/v1/groups/{id}/members`, `POST /api/v1/groups/{id}/members`, `DELETE /api/v1/groups/{id}/members/{deviceID}`.
 - `POST /api/v1/auth/session`, `POST /api/v1/auth/logout`, `GET /api/v1/audit`.
@@ -486,7 +488,8 @@ A version's Go schema initializer may only make compatible additive changes auto
 - `EURYPHOS_ADMIN_TOKEN` — generated first-install admin bearer secret; never rotate automatically.
 - `EURYPHOS_ENROLLMENT_TOKEN` — generated first-install enrollment secret; never rotate automatically.
 - `EURYPHOS_AUTO_MIGRATE` — Go schema initialization/compatibility upgrade toggle; default true.
-- `EURYPHOS_ONLINE_GRACE_SECONDS` — server-derived online grace, default 90, allowed 15–3600 seconds.
+- `EURYPHOS_ONLINE_GRACE_SECONDS` — server-derived device online grace, default 90, allowed 15–3600 seconds.
+- `EURYPHOS_JOB_STALE_SECONDS` — running-job heartbeat visibility grace, default 180, allowed 60–86400 seconds. Overdue is observational only and never causes automatic requeue.
 - `EURYPHOS_COOKIE_SECURE` — secure cookie behavior; installed default true.
 
 Never expose unencrypted HTTP directly to untrusted networks. Terminate TLS at a correctly configured trusted proxy. Forwarded client-IP headers must be honored only from explicitly configured trusted proxies.
