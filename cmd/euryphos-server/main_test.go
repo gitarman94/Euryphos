@@ -107,6 +107,11 @@ func TestSQLiteServerAgentProtocol(t *testing.T) {
 	if !strings.Contains(string(devices), `"hostname":"test-linux"`) || !strings.Contains(string(devices), `"status":"approved"`) {
 		t.Fatalf("device inventory not visible through admin API: %s", devices)
 	}
+	filtered := performRequest(t, handler, http.MethodGet, "/api/v1/devices?q=test&status=approved&os_family=linux&page=1&page_size=1&sort=hostname&direction=desc", "admin-test-token", "", http.StatusOK)
+	if !strings.Contains(string(filtered), `"total":1`) || !strings.Contains(string(filtered), `"page_size":1`) || !strings.Contains(string(filtered), `"hostname":"test-linux"`) {
+		t.Fatalf("device search/filter/pagination failed: %s", filtered)
+	}
+	performRequest(t, handler, http.MethodGet, "/api/v1/devices?page_size=201", "admin-test-token", "", http.StatusBadRequest)
 
 	// The server queues work, the agent claims it, then returns the execution result.
 	jobResponse := performRequest(t, handler, http.MethodPost, "/api/v1/jobs", "admin-test-token",
