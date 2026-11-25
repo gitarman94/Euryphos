@@ -40,13 +40,13 @@ A workstream is complete only when:
 
 The full field catalog, privacy model, API requirements, and acceptance criteria are maintained in [`docs/DEVICE_MANAGEMENT_UI_SPEC.md`](DEVICE_MANAGEMENT_UI_SPEC.md). The separate endpoint collection contract is in the Euryphos-Agent repository at [`docs/TELEMETRY_COLLECTION_SPEC.md`](https://github.com/gitarman94/Euryphos-Agent/blob/main/docs/TELEMETRY_COLLECTION_SPEC.md).
 
-Implementation tasks:
-- [ ] Add paginated/searchable/sortable Devices page with clickable hostname links and presence/lifecycle states separated.
-- [ ] Add full device detail page and normalized data APIs for identity, directory, hardware, OS, storage, network, agent, certificates, user sessions, activity, and inventory freshness.
-- [ ] Add server-derived online/offline, first-connected, last-connected, and connecting-IP values with trusted-proxy handling.
-- [ ] Add versioned normalized inventory storage, snapshots/history, migrations, and category freshness.
-- [ ] Implement endpoint providers and cross-platform telemetry in Euryphos-Agent according to its collection specification.
-- [ ] Implement client-local GPS opt-in setting, default disabled, locally authoritative, tested through upgrades and remote-policy attempts.
+Implementation tasks (status as of 2026-11-25; all remain open until their full acceptance criteria pass):
+- [ ] Add paginated/searchable/sortable Devices page with clickable hostname links and presence/lifecycle states separated. **Partial API foundation:** server list supports basic search, status/OS/connection-state filters, allowlisted sorting, and bounded paging; browser UI and complete lifecycle controls remain unimplemented.
+- [ ] Add full device detail page and normalized data APIs for identity, directory, hardware, OS, storage, network, agent, certificates, user sessions, activity, and inventory freshness. **Partial API foundation:** an administrator detail API returns core identity and latest category payloads, plus a paginated inventory-history endpoint; the browser page, normalized field APIs, and activity/freshness views remain outstanding.
+- [ ] Add server-derived online/offline, first-connected, last-connected, and connecting-IP values with trusted-proxy handling. **Partial:** server derives online/offline/never-connected and persists first/last contact timestamps; trusted-proxy connecting-IP capture and its security controls remain outstanding.
+- [ ] Add versioned normalized inventory storage, snapshots/history, migrations, and category freshness. **Partial:** current category payloads are retained alongside append-only timestamped history; versioned typed/normalized records, category freshness states, retention, and backup/restore proof remain outstanding.
+- [ ] Implement endpoint providers and cross-platform telemetry in Euryphos-Agent according to its collection specification. **Partial:** initial Linux DMI, CPU/RAM, boot/uptime, root filesystem, battery-where-present, network, and DPKG/RPM/pacman collection exists; full Linux coverage, Windows detail, macOS, and distribution validation remain outstanding.
+- [ ] Implement client-local GPS opt-in setting, default disabled, locally authoritative, tested through upgrades and remote-policy attempts. **Partial privacy guard:** the local config field exists and defaults to false; GPS collection, a user-facing local opt-in workflow, and upgrade/remote-policy tests remain outstanding.
 - [ ] Add role permissions, audit for sensitive inventory access/export, retention limits, and redaction before exposing GPS, serial/SMBIOS IDs, network identifiers, and logged-in users.
 - [ ] Complete real server/agent integration tests proving collection, persistence, and device-detail rendering with actual data.
 
