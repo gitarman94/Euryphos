@@ -39,7 +39,8 @@ jobs:
             install -m 0644 deploy/euryphos.service "$stage/euryphos.service"
             install -m 0644 LICENSE "$stage/LICENSE"
             printf '%s\n' "$GITHUB_REF_NAME" > "$stage/VERSION"
-            tar -C "$stage" -czf "dist/euryphos-linux-${arch}.tar.gz" .
+            archive="$PWD/dist/euryphos-linux-${arch}.tar.gz"
+            tar -C "$stage" -czf "$archive" .
             rm -rf "$stage"
           done
           (cd dist && sha256sum euryphos-linux-*.tar.gz > SHA256SUMS)
