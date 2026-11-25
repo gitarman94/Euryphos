@@ -2421,6 +2421,7 @@ func validServiceControlPayload(payload []byte) bool {
 	if err:=json.Unmarshal(payload,&request);err!=nil{return false}
 	name:=strings.TrimSpace(request.ServiceName)
 	if len(name)<1 || len(name)>256{return false}
+	if strings.EqualFold(name, "systemctl") { return false }
 	first:=name[0]
 	if !(first>='a'&&first<='z'||first>='A'&&first<='Z'||first>='0'&&first<='9'){return false}
 	for _,char:=range name{
