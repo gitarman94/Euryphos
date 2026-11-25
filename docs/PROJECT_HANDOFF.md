@@ -217,18 +217,16 @@ Keep `Euryphos-Agent/docs/PROJECT_HANDOFF.md` synchronized with actual handler b
 
 ### Server CI
 
-GitHub Actions run **45614633872** on server commit `26a8a2f4fdd6ce64bf167ad0126e95a967a6a5ad` completed successfully. It passed:
+GitHub Actions run **[45619383331](https://github.com/gitarman94/Euryphos/actions/runs/45619383331)** on the current server main HEAD `1ba56cbd4487236bd27ac8011ca6b387c72369af` completed successfully on 2026-11-25. It passed:
 
 - `go mod tidy`
 - `go test ./...`
 - `go vet ./...`
 - `go build -trimpath ./cmd/euryphos-server`
 
-That successful run included server-side typed service-control validation and the normalized storage/services work.
+This run includes the job receive-lease recovery, dispatch of queued fleet targets while a job is running, the recovery index/schema version 12, case-insensitive rejection of the reserved service name `systemctl`, and the corresponding SQLite/API regression tests. The validation job's test, vet, and build steps all completed successfully.
 
-**Important:** additional code was committed after that passing run: job receive-lease recovery, re-dispatch for other queued targets in a running fleet job, index/migration updates, lease regression tests, and case-insensitive rejection of the reserved service name `systemctl`. These newer commits have **not** yet been confirmed by a completed CI run in the current work session.
-
-Latest known server code/test HEAD from this session: `a52436035da0f10e5f1cca17f515b8206a8f3fd5` (service-control reserved-name tests). Subsequent server documentation changes may be newer than that code commit; check GitHub main before resuming.
+Current server main HEAD at this handoff update: `1ba56cbd4487236bd27ac8011ca6b387c72369af`. This validates the current Go/SQLite test/build path, but does not prove real endpoint execution, production deployment, or safe exactly-once behavior.
 
 ### Agent CI dependency
 
