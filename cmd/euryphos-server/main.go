@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -75,6 +76,8 @@ func routes(s *Server) http.Handler {
 	mux.HandleFunc("POST /api/v1/devices/{id}/heartbeat", s.deviceAuth(s.heartbeat))
 	mux.HandleFunc("POST /api/v1/devices/{id}/inventory", s.deviceAuth(s.inventory))
 	mux.HandleFunc("GET /api/v1/devices", s.admin(s.devices))
+	mux.HandleFunc("GET /api/v1/devices/{id}", s.admin(s.deviceDetail))
+	mux.HandleFunc("GET /api/v1/devices/{id}/inventory/history", s.admin(s.inventoryHistory))
 	mux.HandleFunc("POST /api/v1/jobs", s.admin(s.createJob))
 	mux.HandleFunc("GET /api/v1/devices/{id}/jobs/next", s.deviceAuth(s.nextJob))
 	mux.HandleFunc("POST /api/v1/devices/{id}/jobs/{job}/result", s.deviceAuth(s.jobResult))
@@ -162,6 +165,18 @@ func migrate(ctx context.Context, db *sql.DB) error {
 			received_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			PRIMARY KEY(device_id, category)
 		)`,
+		`CREATE TABLE IF NOT EXISTS device_inventory_history (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+			category TEXT NOT NULL,
+			payload TEXT NOT NULL,
+			observed_at TEXT NOT NULL,
+			received_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_inventory_history_device_category_id
+			ON device_inventory_history(device_id, category, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_inventory_history_device_received
+			ON device_inventory_history(device_id, received_at DESC)`,
 		`CREATE TABLE IF NOT EXISTS jobs (
 			id TEXT PRIMARY KEY,
 			action TEXT NOT NULL,
@@ -184,6 +199,7 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_job_targets_device_status ON job_targets(device_id, status)`,
 		`CREATE INDEX IF NOT EXISTS idx_jobs_status_created ON jobs(status, created_at)`,
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (1)`,
+		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (2)`,
 	}
 	for _, statement := range statements {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
@@ -327,18 +343,36 @@ func (s *Server) inventory(w http.ResponseWriter, r *http.Request) {
 	if in.ObservedAt.IsZero() {
 		in.ObservedAt = time.Now().UTC()
 	}
-	_, err := s.db.ExecContext(r.Context(), `INSERT INTO device_inventory(device_id, category, payload, observed_at)
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "database_error"})
+		return
+	}
+	defer tx.Rollback()
+	observedAt := in.ObservedAt.UTC().Format(time.RFC3339Nano)
+	if _, err := tx.ExecContext(r.Context(), `INSERT INTO device_inventory_history(device_id, category, payload, observed_at)
+		VALUES (?, ?, ?, ?)`, r.PathValue("id"), in.Category, string(in.Payload), observedAt); err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "inventory_history_write_failed"})
+		return
+	}
+	if _, err := tx.ExecContext(r.Context(), `INSERT INTO device_inventory(device_id, category, payload, observed_at)
 		VALUES (?, ?, ?, ?)
 		ON CONFLICT(device_id, category) DO UPDATE SET
 			payload = excluded.payload,
 			observed_at = excluded.observed_at,
 			received_at = CURRENT_TIMESTAMP`,
-		r.PathValue("id"), in.Category, string(in.Payload), in.ObservedAt.UTC().Format(time.RFC3339Nano))
-	if err != nil {
-		write(w, http.StatusInternalServerError, response{"error": "database_error"})
+		r.PathValue("id"), in.Category, string(in.Payload), observedAt); err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "inventory_current_write_failed"})
 		return
 	}
-	_, _ = s.db.ExecContext(r.Context(), "UPDATE devices SET last_seen = ? WHERE id = ?", time.Now().UTC().Format(time.RFC3339Nano), r.PathValue("id"))
+	if _, err := tx.ExecContext(r.Context(), "UPDATE devices SET last_seen = ? WHERE id = ?", time.Now().UTC().Format(time.RFC3339Nano), r.PathValue("id")); err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "device_last_seen_update_failed"})
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "inventory_commit_failed"})
+		return
+	}
 	write(w, http.StatusAccepted, response{"status": "accepted"})
 }
 
@@ -368,6 +402,130 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	write(w, http.StatusOK, response{"items": items, "count": len(items)})
+}
+
+// deviceDetail returns the endpoint's current identity and the latest payload for
+// every inventory category. It deliberately omits the device credential hash.
+func (s *Server) deviceDetail(w http.ResponseWriter, r *http.Request) {
+	var id, hostname, osFamily, osVersion, status, createdAt string
+	var lastSeen sql.NullString
+	if err := s.db.QueryRowContext(r.Context(), `SELECT id, hostname, os_family, os_version,
+		status, last_seen, created_at FROM devices WHERE id = ?`, r.PathValue("id")).
+		Scan(&id, &hostname, &osFamily, &osVersion, &status, &lastSeen, &createdAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			write(w, http.StatusNotFound, response{"error": "device_not_found"})
+			return
+		}
+		write(w, http.StatusInternalServerError, response{"error": "database_error"})
+		return
+	}
+
+	rows, err := s.db.QueryContext(r.Context(), `SELECT category, payload, observed_at, received_at
+		FROM device_inventory WHERE device_id = ? ORDER BY category`, id)
+	if err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "inventory_read_failed"})
+		return
+	}
+	defer rows.Close()
+	inventory := []map[string]any{}
+	for rows.Next() {
+		var category, observedAt, receivedAt string
+		var payload []byte
+		if err := rows.Scan(&category, &payload, &observedAt, &receivedAt); err != nil {
+			write(w, http.StatusInternalServerError, response{"error": "inventory_read_failed"})
+			return
+		}
+		inventory = append(inventory, map[string]any{
+			"category": category, "payload": json.RawMessage(payload),
+			"observed_at": observedAt, "received_at": receivedAt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "inventory_read_failed"})
+		return
+	}
+	write(w, http.StatusOK, response{
+		"device": map[string]any{
+			"id": id, "hostname": hostname, "os_family": osFamily, "os_version": osVersion,
+			"status": status, "last_seen": lastSeen.String, "created_at": createdAt,
+		},
+		"inventory": inventory,
+	})
+}
+
+// inventoryHistory returns append-only inventory observations. The cursor is the
+// previous page's oldest snapshot ID; callers can filter the timeline by category.
+func (s *Server) inventoryHistory(w http.ResponseWriter, r *http.Request) {
+	limit := 100
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 500 {
+			write(w, http.StatusBadRequest, response{"error": "invalid_limit", "max": 500})
+			return
+		}
+		limit = parsed
+	}
+	beforeID := int64(0)
+	if raw := r.URL.Query().Get("before_id"); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed < 1 {
+			write(w, http.StatusBadRequest, response{"error": "invalid_before_id"})
+			return
+		}
+		beforeID = parsed
+	}
+	query := `SELECT id, category, payload, observed_at, received_at
+		FROM device_inventory_history WHERE device_id = ?`
+	args := []any{r.PathValue("id")}
+	if category := strings.TrimSpace(r.URL.Query().Get("category")); category != "" {
+		if len(category) > 80 {
+			write(w, http.StatusBadRequest, response{"error": "invalid_category"})
+			return
+		}
+		query += ` AND category = ?`
+		args = append(args, category)
+	}
+	if beforeID > 0 {
+		query += ` AND id < ?`
+		args = append(args, beforeID)
+	}
+	query += ` ORDER BY id DESC LIMIT ?`
+	args = append(args, limit+1)
+	rows, err := s.db.QueryContext(r.Context(), query, args...)
+	if err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "inventory_history_read_failed"})
+		return
+	}
+	defer rows.Close()
+	items := []map[string]any{}
+	for rows.Next() {
+		var snapshotID int64
+		var category, observedAt, receivedAt string
+		var payload []byte
+		if err := rows.Scan(&snapshotID, &category, &payload, &observedAt, &receivedAt); err != nil {
+			write(w, http.StatusInternalServerError, response{"error": "inventory_history_read_failed"})
+			return
+		}
+		items = append(items, map[string]any{
+			"id": snapshotID, "category": category, "payload": json.RawMessage(payload),
+			"observed_at": observedAt, "received_at": receivedAt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "inventory_history_read_failed"})
+		return
+	}
+	hasMore := len(items) > limit
+	if hasMore {
+		items = items[:limit]
+	}
+	var nextBeforeID int64
+	if hasMore && len(items) > 0 {
+		nextBeforeID = items[len(items)-1]["id"].(int64)
+	}
+	write(w, http.StatusOK, response{
+		"items": items, "count": len(items), "has_more": hasMore, "next_before_id": nextBeforeID,
+	})
 }
 
 func (s *Server) createJob(w http.ResponseWriter, r *http.Request) {
