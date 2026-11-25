@@ -151,6 +151,9 @@ func routes(s *Server) http.Handler {
 	mux.HandleFunc("GET /api/v1/devices/{id}", s.admin(s.deviceDetail))
 	mux.HandleFunc("GET /api/v1/devices/{id}/inventory/history", s.admin(s.inventoryHistory))
 	mux.HandleFunc("GET /api/v1/jobs", s.admin(s.listJobs))
+	mux.HandleFunc("GET /api/v1/job-alerts", s.admin(s.listJobAlerts))
+	mux.HandleFunc("POST /api/v1/job-alerts/{id}/acknowledge", s.admin(s.acknowledgeJobAlert))
+	mux.HandleFunc("POST /api/v1/job-alerts/{id}/resolve", s.admin(s.resolveJobAlert))
 	mux.HandleFunc("POST /api/v1/jobs", s.admin(s.createJob))
 	mux.HandleFunc("GET /api/v1/devices/{id}/jobs/next", s.deviceAuth(s.nextJob))
 	mux.HandleFunc("POST /api/v1/devices/{id}/jobs/{job}/result", s.deviceAuth(s.jobResult))
@@ -459,6 +462,24 @@ func migrate(ctx context.Context, db *sql.DB) error {
 			updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			PRIMARY KEY(job_id, device_id)
 		)`,
+		`CREATE TABLE IF NOT EXISTS job_alerts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+			device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+			claim_id TEXT NOT NULL,
+			status TEXT NOT NULL CHECK(status IN ('open','acknowledged','resolved','recovered')),
+			first_seen_at TEXT NOT NULL,
+			last_seen_at TEXT NOT NULL,
+			acknowledged_at TEXT,
+			acknowledged_by TEXT NOT NULL DEFAULT '',
+			resolved_at TEXT,
+			resolved_by TEXT NOT NULL DEFAULT '',
+			resolution TEXT NOT NULL DEFAULT '',
+			reason TEXT NOT NULL DEFAULT '',
+			UNIQUE(job_id, device_id, claim_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_job_alerts_status_seen ON job_alerts(status, first_seen_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_job_targets_status_updated ON job_targets(status, updated_at)`,
 		`CREATE TABLE IF NOT EXISTS job_group_targets (
 			job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
 			group_id INTEGER NOT NULL,
@@ -485,6 +506,7 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (11)`,
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (12)`,
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (13)`,
+		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (14)`,
 	}
 	for _, statement := range statements {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
@@ -2739,7 +2761,7 @@ func (s *Server) jobResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	terminal := map[string]bool{"succeeded": true, "failed": true, "cancelled": true}
+	terminal := map[string]bool{"succeeded": true, "failed": true, "cancelled": true, "indeterminate": true}
 	if terminal[currentStatus] {
 		if currentStatus != state {
 			write(w, http.StatusConflict, response{"error": "job_already_terminal", "status": currentStatus})
@@ -2800,6 +2822,452 @@ func (s *Server) jobStaleCutoffModifier() string {
 	return fmt.Sprintf("-%d seconds", int(grace.Seconds()))
 }
 
+
+func safeJobRetry(action string, payload []byte) (bool, string) {
+	switch action {
+	case "inventory.refresh":
+		return true, "Read-only inventory collection can be repeated after the previous execution is confirmed stopped."
+	case "service.control":
+		var request struct {
+			Operation string `json:"operation"`
+		}
+		if err := json.Unmarshal(payload, &request); err != nil {
+			return false, "The service operation could not be classified."
+		}
+		switch strings.ToLower(strings.TrimSpace(request.Operation)) {
+		case "start", "stop", "enable", "disable":
+			return true, "This is a repeatable desired-state service operation; retry still requires confirmation that the previous execution has stopped."
+		case "restart":
+			return false, "Service restart is not retryable because repeating it can interrupt the service again."
+		default:
+			return false, "This service operation is not approved for retry."
+		}
+	default:
+		return false, "This action has no approved retry classification. It must not be replayed automatically."
+	}
+}
+
+func (s *Server) syncJobAlerts(ctx context.Context, tx *sql.Tx, r *http.Request) error {
+	type candidate struct {
+		jobID, deviceID, claimID, updatedAt string
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT t.job_id,t.device_id,t.claim_id,t.updated_at
+		FROM job_targets t
+		JOIN jobs j ON j.id=t.job_id
+		WHERE t.status='running' AND COALESCE(t.claim_id,'')<>''
+			AND t.updated_at < datetime('now', ?)
+			AND NOT EXISTS (
+				SELECT 1 FROM job_alerts a
+				WHERE a.job_id=t.job_id AND a.device_id=t.device_id AND a.claim_id=t.claim_id
+			)
+		ORDER BY t.updated_at ASC LIMIT 500`, s.jobStaleCutoffModifier())
+	if err != nil {
+		return err
+	}
+	candidates := []candidate{}
+	for rows.Next() {
+		var item candidate
+		if err := rows.Scan(&item.jobID, &item.deviceID, &item.claimID, &item.updatedAt); err != nil {
+			rows.Close()
+			return err
+		}
+		candidates = append(candidates, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, item := range candidates {
+		result, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO job_alerts(
+			job_id,device_id,claim_id,status,first_seen_at,last_seen_at
+		) VALUES(?,?,?,'open',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`,
+			item.jobID, item.deviceID, item.claimID)
+		if err != nil {
+			return err
+		}
+		added, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if added == 1 {
+			if err := auditEvent(ctx, tx, r, "system", "job-heartbeat-monitor",
+				"job.alert.overdue", "warning", "job_target", item.jobID+"/"+item.deviceID,
+				map[string]any{"job_id": item.jobID, "device_id": item.deviceID, "claim_id": item.claimID,
+					"last_activity_at": item.updatedAt, "stale_after_seconds": int(s.jobStaleAfter.Seconds())}); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE job_alerts
+		SET last_seen_at=CURRENT_TIMESTAMP
+		WHERE status IN ('open','acknowledged')
+			AND EXISTS (
+				SELECT 1 FROM job_targets t
+				WHERE t.job_id=job_alerts.job_id AND t.device_id=job_alerts.device_id
+					AND t.claim_id=job_alerts.claim_id AND t.status='running'
+					AND t.updated_at < datetime('now', ?)
+			)`, s.jobStaleCutoffModifier()); err != nil {
+		return err
+	}
+
+	type activeAlert struct {
+		id int64
+		jobID, deviceID, claimID, targetStatus, currentClaim string
+		overdue bool
+	}
+	activeRows, err := tx.QueryContext(ctx, `SELECT a.id,a.job_id,a.device_id,a.claim_id,
+		COALESCE(t.status,''),COALESCE(t.claim_id,''),
+		CASE WHEN t.status='running' AND t.claim_id=a.claim_id
+			AND t.updated_at < datetime('now', ?) THEN 1 ELSE 0 END
+		FROM job_alerts a
+		LEFT JOIN job_targets t ON t.job_id=a.job_id AND t.device_id=a.device_id
+		WHERE a.status IN ('open','acknowledged')
+		ORDER BY a.id LIMIT 500`, s.jobStaleCutoffModifier())
+	if err != nil {
+		return err
+	}
+	updates := []activeAlert{}
+	for activeRows.Next() {
+		var item activeAlert
+		var overdue int
+		if err := activeRows.Scan(&item.id, &item.jobID, &item.deviceID, &item.claimID,
+			&item.targetStatus, &item.currentClaim, &overdue); err != nil {
+			activeRows.Close()
+			return err
+		}
+		item.overdue = overdue == 1
+		if !item.overdue {
+			updates = append(updates, item)
+		}
+	}
+	if err := activeRows.Err(); err != nil {
+		activeRows.Close()
+		return err
+	}
+	activeRows.Close()
+	for _, item := range updates {
+		state, resolution, event := "resolved", "target_state_changed", "job.alert.closed"
+		if item.targetStatus == "running" && item.currentClaim == item.claimID {
+			state, resolution, event = "recovered", "heartbeat_resumed", "job.alert.recovered"
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE job_alerts
+			SET status=?,resolved_at=CURRENT_TIMESTAMP,resolved_by='system',resolution=?
+			WHERE id=? AND status IN ('open','acknowledged')`, state, resolution, item.id); err != nil {
+			return err
+		}
+		if err := auditEvent(ctx, tx, r, "system", "job-heartbeat-monitor", event, "success",
+			"job_target", item.jobID+"/"+item.deviceID,
+			map[string]any{"alert_id": item.id, "claim_id": item.claimID,
+				"resolution": resolution, "target_status": item.targetStatus}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Server) listJobAlerts(w http.ResponseWriter, r *http.Request) {
+	page, pageSize := 1, 50
+	if raw := r.URL.Query().Get("page"); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1 || value > 1000000 {
+			write(w, http.StatusBadRequest, response{"error": "invalid_page"})
+			return
+		}
+		page = value
+	}
+	if raw := r.URL.Query().Get("page_size"); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1 || value > 200 {
+			write(w, http.StatusBadRequest, response{"error": "invalid_page_size", "max": 200})
+			return
+		}
+		pageSize = value
+	}
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "job_alert_sync_failed"})
+		return
+	}
+	defer tx.Rollback()
+	if err := s.syncJobAlerts(r.Context(), tx, r); err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "job_alert_sync_failed"})
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "job_alert_sync_failed"})
+		return
+	}
+	var total, openCount, acknowledgedCount int
+	if err := s.db.QueryRowContext(r.Context(), `SELECT
+		COALESCE(sum(CASE WHEN status='open' THEN 1 ELSE 0 END),0),
+		COALESCE(sum(CASE WHEN status='acknowledged' THEN 1 ELSE 0 END),0),
+		count(*)
+		FROM job_alerts WHERE status IN ('open','acknowledged')`).Scan(&openCount, &acknowledgedCount, &total); err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "job_alert_count_failed"})
+		return
+	}
+	rows, err := s.db.QueryContext(r.Context(), `SELECT a.id,a.job_id,a.device_id,d.hostname,j.action,j.status,
+		t.status,COALESCE(t.claim_id,''),t.attempt_count,t.updated_at,a.first_seen_at,a.last_seen_at,a.status,j.payload
+		FROM job_alerts a
+		JOIN jobs j ON j.id=a.job_id
+		JOIN job_targets t ON t.job_id=a.job_id AND t.device_id=a.device_id
+		JOIN devices d ON d.id=a.device_id
+		WHERE a.status IN ('open','acknowledged')
+		ORDER BY CASE a.status WHEN 'open' THEN 0 ELSE 1 END,a.first_seen_at ASC,a.id ASC
+		LIMIT ? OFFSET ?`, pageSize, (page-1)*pageSize)
+	if err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "job_alert_read_failed"})
+		return
+	}
+	defer rows.Close()
+	items := []map[string]any{}
+	for rows.Next() {
+		var id int64
+		var jobID, deviceID, hostname, action, jobStatus, targetStatus, claimID, updatedAt, firstSeenAt, lastSeenAt, alertStatus string
+		var attempts int
+		var payload []byte
+		if err := rows.Scan(&id,&jobID,&deviceID,&hostname,&action,&jobStatus,&targetStatus,&claimID,
+			&attempts,&updatedAt,&firstSeenAt,&lastSeenAt,&alertStatus,&payload); err != nil {
+			write(w, http.StatusInternalServerError, response{"error": "job_alert_read_failed"})
+			return
+		}
+		retryAllowed, retryReason := safeJobRetry(action, payload)
+		items = append(items, map[string]any{
+			"id":id,"job_id":jobID,"device_id":deviceID,"hostname":hostname,"action":action,
+			"job_status":jobStatus,"target_status":targetStatus,"claim_id":claimID,"attempt":attempts,
+			"last_activity_at":updatedAt,"first_seen_at":firstSeenAt,"last_seen_at":lastSeenAt,
+			"status":alertStatus,"retry_allowed":retryAllowed,"retry_reason":retryReason,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "job_alert_read_failed"})
+		return
+	}
+	offset := (page-1)*pageSize
+	write(w, http.StatusOK, response{
+		"items":items,"count":len(items),"total":total,"open_count":openCount,
+		"acknowledged_count":acknowledgedCount,"page":page,"page_size":pageSize,"has_more":offset+len(items)<total,
+		"stale_after_seconds":int(s.jobStaleAfter.Seconds()),
+	})
+}
+
+func (s *Server) acknowledgeJobAlert(w http.ResponseWriter, r *http.Request) {
+	alertID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || alertID < 1 {
+		write(w, http.StatusBadRequest, response{"error": "invalid_job_alert_id"})
+		return
+	}
+	var in struct {
+		Reason string `json:"reason"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	in.Reason = strings.TrimSpace(in.Reason)
+	if len(in.Reason) < 5 || len(in.Reason) > 1000 {
+		write(w, http.StatusBadRequest, response{"error": "reason_required", "minimum_length": 5, "maximum_length": 1000})
+		return
+	}
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "job_alert_acknowledge_failed"})
+		return
+	}
+	defer tx.Rollback()
+	if err := s.syncJobAlerts(r.Context(), tx, r); err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "job_alert_sync_failed"})
+		return
+	}
+	var alertStatus, jobID, deviceID, claimID string
+	if err := tx.QueryRowContext(r.Context(), `SELECT status,job_id,device_id,claim_id
+		FROM job_alerts WHERE id=?`, alertID).Scan(&alertStatus,&jobID,&deviceID,&claimID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			write(w, http.StatusNotFound, response{"error": "job_alert_not_found"})
+			return
+		}
+		write(w, http.StatusInternalServerError, response{"error": "job_alert_read_failed"})
+		return
+	}
+	if alertStatus == "acknowledged" {
+		if err := tx.Commit(); err != nil {
+			write(w, http.StatusInternalServerError, response{"error": "job_alert_acknowledge_failed"})
+			return
+		}
+		write(w, http.StatusOK, response{"status": "already_acknowledged", "alert_id": alertID})
+		return
+	}
+	if alertStatus != "open" {
+		write(w, http.StatusConflict, response{"error": "job_alert_not_active", "status": alertStatus})
+		return
+	}
+	var overdue int
+	if err := tx.QueryRowContext(r.Context(), `SELECT CASE WHEN status='running' AND claim_id=?
+		AND updated_at < datetime('now', ?) THEN 1 ELSE 0 END
+		FROM job_targets WHERE job_id=? AND device_id=?`,
+		claimID,s.jobStaleCutoffModifier(),jobID,deviceID).Scan(&overdue); err != nil || overdue != 1 {
+		write(w, http.StatusConflict, response{"error": "job_alert_no_longer_overdue"})
+		return
+	}
+	if _, err := tx.ExecContext(r.Context(), `UPDATE job_alerts SET status='acknowledged',
+		acknowledged_at=CURRENT_TIMESTAMP,acknowledged_by='configured-admin',reason=?
+		WHERE id=? AND status='open'`, in.Reason, alertID); err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "job_alert_acknowledge_failed"})
+		return
+	}
+	if err := auditEvent(r.Context(), tx, r, "admin", "configured-admin", "job.alert.acknowledged",
+		"success", "job_target", jobID+"/"+deviceID,
+		map[string]any{"alert_id":alertID,"claim_id":claimID,"reason":in.Reason}); err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "audit_write_failed"})
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "job_alert_acknowledge_failed"})
+		return
+	}
+	write(w, http.StatusOK, response{"status":"acknowledged","alert_id":alertID})
+}
+
+func (s *Server) resolveJobAlert(w http.ResponseWriter, r *http.Request) {
+	alertID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || alertID < 1 {
+		write(w, http.StatusBadRequest, response{"error": "invalid_job_alert_id"})
+		return
+	}
+	var in struct {
+		Decision string `json:"decision"`
+		ExpectedClaimID string `json:"expected_claim_id"`
+		Reason string `json:"reason"`
+		Confirm bool `json:"confirm"`
+		ConfirmPreviousExecutionStopped bool `json:"confirm_previous_execution_stopped"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	in.Decision = strings.TrimSpace(in.Decision)
+	in.ExpectedClaimID = strings.TrimSpace(in.ExpectedClaimID)
+	in.Reason = strings.TrimSpace(in.Reason)
+	if !in.Confirm || len(in.ExpectedClaimID) != 36 || len(in.Reason) < 10 || len(in.Reason) > 1000 ||
+		(in.Decision != "mark_indeterminate" && in.Decision != "retry") {
+		write(w, http.StatusBadRequest, response{"error": "invalid_job_alert_resolution",
+			"required": "confirm=true, expected_claim_id, a 10-1000 character reason, and decision mark_indeterminate or retry"})
+		return
+	}
+	if in.Decision == "retry" && !in.ConfirmPreviousExecutionStopped {
+		write(w, http.StatusBadRequest, response{"error": "retry_requires_stopped_confirmation"})
+		return
+	}
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "job_alert_resolution_failed"})
+		return
+	}
+	defer tx.Rollback()
+	if err := s.syncJobAlerts(r.Context(), tx, r); err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "job_alert_sync_failed"})
+		return
+	}
+	var alertStatus, jobID, deviceID, claimID, targetStatus, currentClaim, action string
+	var payload []byte
+	var overdue int
+	if err := tx.QueryRowContext(r.Context(), `SELECT a.status,a.job_id,a.device_id,a.claim_id,
+		t.status,COALESCE(t.claim_id,''),j.action,j.payload,
+		CASE WHEN t.status='running' AND t.claim_id=a.claim_id AND
+			t.updated_at < datetime('now', ?) THEN 1 ELSE 0 END
+		FROM job_alerts a
+		JOIN job_targets t ON t.job_id=a.job_id AND t.device_id=a.device_id
+		JOIN jobs j ON j.id=a.job_id
+		WHERE a.id=?`, s.jobStaleCutoffModifier(), alertID).
+		Scan(&alertStatus,&jobID,&deviceID,&claimID,&targetStatus,&currentClaim,&action,&payload,&overdue); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			write(w, http.StatusNotFound, response{"error": "job_alert_not_found"})
+			return
+		}
+		write(w, http.StatusInternalServerError, response{"error": "job_alert_read_failed"})
+		return
+	}
+	if alertStatus != "open" && alertStatus != "acknowledged" {
+		write(w, http.StatusConflict, response{"error": "job_alert_not_active", "status":alertStatus})
+		return
+	}
+	if claimID != in.ExpectedClaimID || currentClaim != claimID || targetStatus != "running" || overdue != 1 {
+		write(w, http.StatusConflict, response{"error": "job_alert_no_longer_overdue_or_claim_changed"})
+		return
+	}
+	if in.Decision == "retry" {
+		retryAllowed, retryReason := safeJobRetry(action,payload)
+		if !retryAllowed {
+			write(w, http.StatusConflict, response{"error":"retry_not_safe","reason":retryReason})
+			return
+		}
+		result, err := tx.ExecContext(r.Context(), `UPDATE job_targets
+			SET status='queued',claim_id=NULL,result=NULL,error=NULL,updated_at=CURRENT_TIMESTAMP
+			WHERE job_id=? AND device_id=? AND status='running' AND claim_id=?
+				AND updated_at < datetime('now', ?)`,
+			jobID,deviceID,claimID,s.jobStaleCutoffModifier())
+		if err != nil {
+			write(w, http.StatusInternalServerError, response{"error":"job_target_retry_failed"})
+			return
+		}
+		changed, _ := result.RowsAffected()
+		if changed != 1 {
+			write(w, http.StatusConflict, response{"error":"job_alert_no_longer_overdue_or_claim_changed"})
+			return
+		}
+	} else {
+		result, err := tx.ExecContext(r.Context(), `UPDATE job_targets
+			SET status='indeterminate',error=?,updated_at=CURRENT_TIMESTAMP
+			WHERE job_id=? AND device_id=? AND status='running' AND claim_id=?
+				AND updated_at < datetime('now', ?)`,
+			"Administrator marked execution outcome indeterminate: "+in.Reason,
+			jobID,deviceID,claimID,s.jobStaleCutoffModifier())
+		if err != nil {
+			write(w, http.StatusInternalServerError, response{"error":"job_target_resolution_failed"})
+			return
+		}
+		changed, _ := result.RowsAffected()
+		if changed != 1 {
+			write(w, http.StatusConflict, response{"error":"job_alert_no_longer_overdue_or_claim_changed"})
+			return
+		}
+	}
+	if _, err := tx.ExecContext(r.Context(), `UPDATE jobs SET status=CASE
+		WHEN EXISTS (SELECT 1 FROM job_targets WHERE job_id=? AND status IN ('queued','received','running')) THEN
+			CASE WHEN EXISTS (SELECT 1 FROM job_targets WHERE job_id=? AND status='running') THEN 'running' ELSE 'queued' END
+		WHEN EXISTS (SELECT 1 FROM job_targets WHERE job_id=? AND status IN ('failed','cancelled','indeterminate')) THEN 'completed_with_errors'
+		ELSE 'completed' END WHERE id=?`, jobID,jobID,jobID,jobID); err != nil {
+		write(w, http.StatusInternalServerError, response{"error":"job_aggregation_failed"})
+		return
+	}
+	if _, err := tx.ExecContext(r.Context(), `UPDATE job_alerts
+		SET status='resolved',resolved_at=CURRENT_TIMESTAMP,resolved_by='configured-admin',
+			resolution=?,reason=? WHERE id=? AND status IN ('open','acknowledged')`,
+		in.Decision,in.Reason,alertID); err != nil {
+		write(w, http.StatusInternalServerError, response{"error":"job_alert_resolution_failed"})
+		return
+	}
+	event := "job.target.marked_indeterminate"
+	details := map[string]any{"alert_id":alertID,"claim_id":claimID,"reason":in.Reason,
+		"previous_status":"running","resolution":"indeterminate"}
+	if in.Decision == "retry" {
+		event = "job.target.retry_authorized"
+		details["resolution"] = "retry_queued"
+		details["previous_execution_confirmed_stopped"] = true
+		details["retry_class"] = "idempotent_or_read_only"
+	}
+	if err := auditEvent(r.Context(), tx, r, "admin", "configured-admin", event, "success",
+		"job_target", jobID+"/"+deviceID, details); err != nil {
+		write(w, http.StatusInternalServerError, response{"error":"audit_write_failed"})
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		write(w, http.StatusInternalServerError, response{"error":"job_alert_resolution_failed"})
+		return
+	}
+	write(w, http.StatusOK, response{"status":"resolved","decision":in.Decision,"alert_id":alertID,
+		"job_id":jobID,"device_id":deviceID})
+}
+
 func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 	page, pageSize := 1, 50
 	if raw := r.URL.Query().Get("page"); raw != "" {
@@ -2827,6 +3295,7 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 		count(t.device_id),
 		COALESCE(sum(CASE WHEN t.status='succeeded' THEN 1 ELSE 0 END),0),
 		COALESCE(sum(CASE WHEN t.status='failed' THEN 1 ELSE 0 END),0),
+		COALESCE(sum(CASE WHEN t.status='indeterminate' THEN 1 ELSE 0 END),0),
 		COALESCE(sum(CASE WHEN t.status='running' THEN 1 ELSE 0 END),0),
 		COALESCE(sum(CASE WHEN t.status='queued' OR t.status='received' THEN 1 ELSE 0 END),0),
 		COALESCE(sum(CASE WHEN t.status='running' AND t.updated_at < datetime('now', ?) THEN 1 ELSE 0 END),0),
@@ -2842,14 +3311,15 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 	items := []map[string]any{}
 	for rows.Next() {
 		var id, action, status, createdAt, lastUpdatedAt string
-		var targetCount, succeeded, failed, running, pending, staleRunning int
-		if err := rows.Scan(&id,&action,&status,&createdAt,&targetCount,&succeeded,&failed,&running,&pending,&staleRunning,&lastUpdatedAt); err != nil {
+		var targetCount, succeeded, failed, indeterminate, running, pending, staleRunning int
+		if err := rows.Scan(&id,&action,&status,&createdAt,&targetCount,&succeeded,&failed,&indeterminate,&running,&pending,&staleRunning,&lastUpdatedAt); err != nil {
 			write(w, http.StatusInternalServerError, response{"error": "job_list_read_failed"})
 			return
 		}
 		items = append(items, map[string]any{
 			"id":id,"action":action,"status":status,"created_at":createdAt,"last_updated_at":lastUpdatedAt,
-			"target_count":targetCount,"succeeded":succeeded,"failed":failed,"running":running,"pending":pending,"stale_running":staleRunning,
+			"target_count":targetCount,"succeeded":succeeded,"failed":failed,"indeterminate":indeterminate,
+			"running":running,"pending":pending,"stale_running":staleRunning,
 		})
 	}
 	if err := rows.Err(); err != nil {
