@@ -2901,7 +2901,7 @@ func (s *Server) syncJobAlerts(ctx context.Context, tx *sql.Tx, r *http.Request)
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE job_alerts
 		SET last_seen_at=CURRENT_TIMESTAMP
-		WHERE status IN ('open','acknowledged')
+		WHERE status IN ('open','acknowledged') AND last_seen_at < datetime('now','-60 seconds')
 			AND EXISTS (
 				SELECT 1 FROM job_targets t
 				WHERE t.job_id=job_alerts.job_id AND t.device_id=job_alerts.device_id
@@ -2914,54 +2914,62 @@ func (s *Server) syncJobAlerts(ctx context.Context, tx *sql.Tx, r *http.Request)
 	type activeAlert struct {
 		id int64
 		jobID, deviceID, claimID, targetStatus, currentClaim string
-		overdue bool
 	}
-	activeRows, err := tx.QueryContext(ctx, `SELECT a.id,a.job_id,a.device_id,a.claim_id,
-		COALESCE(t.status,''),COALESCE(t.claim_id,''),
-		CASE WHEN t.status='running' AND t.claim_id=a.claim_id
-			AND t.updated_at < datetime('now', ?) THEN 1 ELSE 0 END
-		FROM job_alerts a
-		LEFT JOIN job_targets t ON t.job_id=a.job_id AND t.device_id=a.device_id
-		WHERE a.status IN ('open','acknowledged')
-		ORDER BY a.id LIMIT 500`, s.jobStaleCutoffModifier())
-	if err != nil {
-		return err
-	}
-	updates := []activeAlert{}
-	for activeRows.Next() {
-		var item activeAlert
-		var overdue int
-		if err := activeRows.Scan(&item.id, &item.jobID, &item.deviceID, &item.claimID,
-			&item.targetStatus, &item.currentClaim, &overdue); err != nil {
+	lastAlertID := int64(0)
+	for {
+		activeRows, err := tx.QueryContext(ctx, `SELECT a.id,a.job_id,a.device_id,a.claim_id,
+			COALESCE(t.status,''),COALESCE(t.claim_id,''),
+			CASE WHEN t.status='running' AND t.claim_id=a.claim_id
+				AND t.updated_at < datetime('now', ?) THEN 1 ELSE 0 END
+			FROM job_alerts a
+			LEFT JOIN job_targets t ON t.job_id=a.job_id AND t.device_id=a.device_id
+			WHERE a.status IN ('open','acknowledged') AND a.id>?
+			ORDER BY a.id LIMIT 500`, s.jobStaleCutoffModifier(), lastAlertID)
+		if err != nil {
+			return err
+		}
+		updates := []activeAlert{}
+		pageLastID, scanned := lastAlertID, 0
+		for activeRows.Next() {
+			var item activeAlert
+			var overdue int
+			if err := activeRows.Scan(&item.id, &item.jobID, &item.deviceID, &item.claimID,
+				&item.targetStatus, &item.currentClaim, &overdue); err != nil {
+				activeRows.Close()
+				return err
+			}
+			scanned++
+			pageLastID = item.id
+			if overdue == 0 {
+				updates = append(updates, item)
+			}
+		}
+		if err := activeRows.Err(); err != nil {
 			activeRows.Close()
 			return err
 		}
-		item.overdue = overdue == 1
-		if !item.overdue {
-			updates = append(updates, item)
-		}
-	}
-	if err := activeRows.Err(); err != nil {
 		activeRows.Close()
-		return err
-	}
-	activeRows.Close()
-	for _, item := range updates {
-		state, resolution, event := "resolved", "target_state_changed", "job.alert.closed"
-		if item.targetStatus == "running" && item.currentClaim == item.claimID {
-			state, resolution, event = "recovered", "heartbeat_resumed", "job.alert.recovered"
+		for _, item := range updates {
+			state, resolution, event := "resolved", "target_state_changed", "job.alert.closed"
+			if item.targetStatus == "running" && item.currentClaim == item.claimID {
+				state, resolution, event = "recovered", "heartbeat_resumed", "job.alert.recovered"
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE job_alerts
+				SET status=?,resolved_at=CURRENT_TIMESTAMP,resolved_by='system',resolution=?
+				WHERE id=? AND status IN ('open','acknowledged')`, state, resolution, item.id); err != nil {
+				return err
+			}
+			if err := auditEvent(ctx, tx, r, "system", "job-heartbeat-monitor", event, "success",
+				"job_target", item.jobID+"/"+item.deviceID,
+				map[string]any{"alert_id": item.id, "claim_id": item.claimID,
+					"resolution": resolution, "target_status": item.targetStatus}); err != nil {
+				return err
+			}
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE job_alerts
-			SET status=?,resolved_at=CURRENT_TIMESTAMP,resolved_by='system',resolution=?
-			WHERE id=? AND status IN ('open','acknowledged')`, state, resolution, item.id); err != nil {
-			return err
+		if scanned == 0 || scanned < 500 {
+			break
 		}
-		if err := auditEvent(ctx, tx, r, "system", "job-heartbeat-monitor", event, "success",
-			"job_target", item.jobID+"/"+item.deviceID,
-			map[string]any{"alert_id": item.id, "claim_id": item.claimID,
-				"resolution": resolution, "target_status": item.targetStatus}); err != nil {
-			return err
-		}
+		lastAlertID = pageLastID
 	}
 	return nil
 }
