@@ -1,0 +1,22 @@
+[Unit]
+Description=Euryphos central management server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=euryphos
+Group=euryphos
+WorkingDirectory=/var/lib/euryphos
+EnvironmentFile=/etc/euryphos/euryphos.env
+ExecStart=/opt/euryphos/current/euryphos-server
+Restart=on-failure
+RestartSec=5s
+KillSignal=SIGTERM
+TimeoutStopSec=45s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
