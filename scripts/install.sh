@@ -123,7 +123,8 @@ preflight_resources() {
       ui_ok "RAM: $(format_gib "$memory_bytes") detected."
     fi
     if [[ "$memory_source" == *"not exposed"* ]]; then
-      ui_warn "The LXC memory ceiling is not exposed to this installer. Verify assigned RAM in Proxmox; host-visible RAM may exceed the CT limit."
+      ui_warn "The LXC memory ceiling is not exposed to this installer. The displayed figure may be host-visible RAM, not the CT allocation."
+      ui_warn "Verify Proxmox memory explicitly: allocate at least 2 GiB for this source-build test; 4 GiB is recommended for routine use."
       warnings=$((warnings + 1))
     fi
   else
