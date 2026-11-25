@@ -82,15 +82,19 @@ First install or upgrade (the command is the same apart from the final argument)
 
 ```bash
 apt-get update && apt-get install -y ca-certificates curl
+apt-get update && apt-get install -y ca-certificates curl
 read -rsp "GitHub read-only token: " GITHUB_TOKEN
-printf '\n'
+printf '\\n'
 export GITHUB_TOKEN
-curl -fsSL \
-  -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-  -H "Accept: application/vnd.github.raw" \
-  "https://api.github.com/repos/gitarman94/Euryphos/contents/scripts/install.sh?ref=main" \
-  | GITHUB_TOKEN="${GITHUB_TOKEN}" bash -s -- install
-unset GITHUB_TOKEN
+INSTALLER="$(mktemp)"
+trap 'rm -f "$INSTALLER"; unset GITHUB_TOKEN' EXIT
+curl -fsSL \\
+  -H "Authorization: Bearer ${GITHUB_TOKEN}" \\
+  -H "Accept: application/vnd.github.raw" \\
+  "https://api.github.com/repos/gitarman94/Euryphos/contents/scripts/install.sh?ref=main" \\
+  -o "$INSTALLER"
+bash -n "$INSTALLER"
+GITHUB_TOKEN="$GITHUB_TOKEN" bash "$INSTALLER" install
 ```
 
 For later upgrades, repeat the command and change the final argument from `install` to `upgrade`. The updater resolves the latest published GitHub release. To pin a version, export `EURYPHOS_VERSION=vX.Y.Z` before running it.
