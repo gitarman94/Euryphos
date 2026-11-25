@@ -905,22 +905,36 @@ func normalizeIdentity(value string) string {
 	return strings.NewReplacer("-", "", "{", "", "}", "", " ", "").Replace(value)
 }
 
+func usableIdentity(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	switch value {
+	case "", "unknown", "none", "not specified", "default string",
+		"to be filled by o.e.m.", "to be filled by oem", "system serial number",
+		"serial number", "n/a", "na", "0":
+		return ""
+	default:
+		return value
+	}
+}
+
 func (s *Server) recordDuplicateCandidates(ctx context.Context, tx *sql.Tx, deviceID string) error {
 	var serial, uuidValue, manufacturer, model string
 	if err := tx.QueryRowContext(ctx, "SELECT serial_number,smbios_uuid,manufacturer,model FROM devices WHERE id=?", deviceID).
 		Scan(&serial,&uuidValue,&manufacturer,&model); err != nil { return err }
-	serial, uuidValue = strings.ToLower(strings.TrimSpace(serial)), normalizeIdentity(uuidValue)
-	manufacturer, model = strings.ToLower(strings.TrimSpace(manufacturer)), strings.ToLower(strings.TrimSpace(model))
+	serial = usableIdentity(serial)
+	uuidValue = normalizeIdentity(uuidValue)
+	if strings.Trim(uuidValue,"0") == "" || strings.Trim(uuidValue,"f") == "" { uuidValue = "" }
+	manufacturer, model = usableIdentity(manufacturer), usableIdentity(model)
 	if uuidValue == "" && (serial == "" || manufacturer == "" || model == "") { return nil }
 	_, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO device_duplicate_candidates(device_id,candidate_device_id,matched_on,confidence)
 		SELECT ?,id,
-		CASE WHEN ?<>'' AND lower(replace(replace(replace(smbios_uuid,'-',''),'{',''),'}',''))=? THEN 'smbios_uuid'
+		CASE WHEN ?<>'' AND lower(replace(replace(replace(replace(smbios_uuid,'-',''),'{',''),'}',''),' ','') )=? THEN 'smbios_uuid'
 		ELSE 'serial_manufacturer_model' END,
 		'high'
 		FROM devices
 		WHERE id<>? AND merged_into IS NULL AND status<>'merged'
-		AND ((?<>'' AND lower(replace(replace(replace(smbios_uuid,'-',''),'{',''),'}',''))=?)
-		OR (?<>'' AND ?<>'' AND ?<>'' AND lower(serial_number)=? AND lower(manufacturer)=? AND lower(model)=?))`,
+		AND ((?<>'' AND lower(replace(replace(replace(replace(smbios_uuid,'-',''),'{',''),'}',''),' ',''))=?)
+		OR (?<>'' AND ?<>'' AND ?<>'' AND lower(trim(serial_number))=? AND lower(trim(manufacturer))=? AND lower(trim(model))=?))`,
 		deviceID,uuidValue,uuidValue,deviceID,uuidValue,uuidValue,serial,manufacturer,model,serial,manufacturer,model)
 	return err
 }
