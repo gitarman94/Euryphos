@@ -93,7 +93,7 @@ After the first versioned GitHub release is published, the normal prebuilt-binar
 apt-get update && apt-get install -y ca-certificates curl && bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/gitarman94/Euryphos/main/scripts/install.sh | bash -s -- install'
 ```
 
-The release installer downloads the matching Linux archive and verifies its SHA-256 checksum before installation. Both paths create the unprivileged service account, install the systemd unit, and create the initial configuration and secrets. The default service listener is port `8080`; place it behind a trusted HTTPS reverse proxy before exposing it to untrusted networks.
+The release installer downloads the matching Linux archive and verifies its SHA-256 checksum before installation. Both paths create the unprivileged service account, install the systemd unit, and create the initial configuration and secrets. The installer explicitly sets release-directory traversal permissions despite its restrictive file-creation umask, then checks that the `euryphos` service account can read and execute the binary before switching the active version. It prints systemd diagnostics if startup or the health check fails. The default service listener is port `8080`; place it behind a trusted HTTPS reverse proxy before exposing it to untrusted networks.
 
 Fresh-install, in-place upgrade, failed-upgrade rollback, reboot, and database restore testing in a Debian 13 Proxmox CT are still required.
 
