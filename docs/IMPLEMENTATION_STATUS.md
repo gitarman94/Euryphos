@@ -9,7 +9,7 @@
 - SQLite WAL, foreign keys, a 10-second busy timeout, bounded connection pool, local database path, and restrictive Unix file permissions.
 - Initial schema for devices, categorized inventory, jobs, job targets, and schema version tracking.
 - Enrollment, administrator approval/revocation, device authentication, heartbeat, categorized inventory upload, device listing, job creation/claiming, and job-result aggregation endpoints.
-- Added a server integration test for enrollment → approval → heartbeat → inventory → job dispatch → result against a SQLite file and HTTP handlers. It has not been executed here because the module dependency cannot be downloaded.
+- Server integration tests now run against the real `modernc.org/sqlite` driver in GitHub Actions and cover enrollment, approval, heartbeat, inventory, job dispatch/results, schema upgrades, typed inventory, group membership, duplicate detection/merge, audit, and history behavior.
 - Docker Compose deployment with a persistent local volume instead of a PostgreSQL container.
 - Updated product, architecture, distribution support matrix, installer audit, and completion-plan documentation.
 
@@ -25,7 +25,7 @@
 - **Endpoint telemetry:** the agent now supplies an initial normalized subset of Linux hardware/CPU/memory/boot/storage/network, distribution identity, and SSSD/realmd directory facts, plus Windows CIM hardware/OS and AD domain/OU facts. Full inventory is still incomplete: certificates, DHCP lease details, all physical disks/volumes, services, security posture, sessions, metrics, and full platform-specific coverage remain outstanding. GPS collection remains disabled/unimplemented. See the agent repository's `docs/TELEMETRY_COLLECTION_SPEC.md`.
 - There is no SSO/MFA/RBAC system, durable push channel, message broker, worker pool, complete compliance-grade audit system (retention, tamper evidence, export controls), or package repository. An initial operational audit table and event coverage are implemented.
 - SQLite is a single-node embedded database with one writer at a time. Fleet-scale throughput, retention, backup/restore, integrity check, and recovery behavior still require measurement and tests.
-- `go.sum` still needs to be populated by `go mod tidy`/`go mod download` in a network-enabled environment. This execution environment cannot resolve `proxy.golang.org`, so the SQLite driver dependency cannot be downloaded and a real driver-backed Go build/test cannot be completed here.
+- SQLite module checksums are committed in `go.sum`; CI runs `go mod tidy` and validates the real driver-backed server.
 
 ## Installer audit findings
 
@@ -37,9 +37,16 @@
 
 ## Validation status
 
-- Server CI run [45601625143](https://github.com/gitarman94/Euryphos/actions/runs/45601625143), commit `bf98a199fd38b154d651c87c25a28819d0f17dc5`, passed `go test ./...`, `go vet ./...`, and `go build -trimpath ./cmd/euryphos-server`.
-- Server integration tests cover legacy SQLite schema upgrades, device detail/history, list filters/presence, normalized directory-based grouping, duplicate candidate review/merge, old-agent-token continuity, and authentication audit events. The most recent merge-field and inventory-history refinements still require a fresh CI run.
-- A passing CI build does not certify production deployment, scale, backup/restore, reverse-proxy behavior, metrics time-series retention, or full end-to-end operation with installed endpoints.
+GitHub Actions run [45603834980](https://github.com/gitarman94/Euryphos/actions/runs/45603834980), on commit `675b6f33f3263e099f8235bbecdd9f3b3c0189fe`, completed successfully on 2026-11-25. The run passed:
+
+- `go mod tidy`
+- `go test ./...`
+- `go vet ./...`
+- `go build -trimpath ./cmd/euryphos-server`
+
+The passing suite includes legacy SQLite migration, exact 64-bit inventory values, device detail/history, search and presence filters, dynamic AD/Linux-compatible groups, duplicate review and merge, old-token continuity, audit events, and inventory-history fingerprint behavior.
+
+This validates the tested Go/SQLite code paths. It does not certify production deployment, fleet-scale throughput, backup/restore, trusted-proxy configuration, browser UI, or end-to-end operation with installed endpoint agents.
 
 ## Separate endpoint-agent repository
 
