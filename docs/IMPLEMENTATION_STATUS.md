@@ -90,3 +90,10 @@ Server integration tests were extended to cover latest-payload replacement, hist
 - `page_size`: 1–200 (default 50).
 
 The response includes `items`, current-page `count`, filtered `total`, `page`, `page_size`, and `has_more`. This is an initial device directory API, not a complete fleet search implementation across all inventory fields.
+
+
+## Server-derived connection presence
+
+Device records now retain server-derived `first_connected_at` and `last_connected_at` timestamps. Authenticated heartbeats set the first timestamp once and update the last timestamp; inventory ingestion also refreshes the last-contact timestamp. The Devices-list and device-detail responses include `connection_state` with `online`, `offline`, `never_connected`, or `unknown` values, while the existing `status` remains the separate enrollment/approval state.
+
+The server uses a 90-second default online grace period. Set `EURYPHOS_ONLINE_GRACE_SECONDS` to a value from 15 to 3600 to tune it for the deployment's heartbeat cadence and network conditions. Existing SQLite databases are upgraded by adding the two timestamp columns if they are absent.
