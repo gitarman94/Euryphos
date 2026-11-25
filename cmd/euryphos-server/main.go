@@ -666,7 +666,10 @@ func (s *Server) inventory(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusInternalServerError, response{"error":"inventory_current_read_failed"})
 		return
 	}
-	if !unchangedPayload {
+	historyChanged := previousErr != nil ||
+		!bytes.Equal(inventoryHistoryFingerprint(in.Category, []byte(previousPayload)),
+			inventoryHistoryFingerprint(in.Category, in.Payload))
+	if historyChanged {
 		if _, err := tx.ExecContext(r.Context(), `INSERT INTO device_inventory_history(device_id, category, payload, observed_at)
 			VALUES (?, ?, ?, ?)`, r.PathValue("id"), in.Category, string(in.Payload), observedAt); err != nil {
 			write(w, http.StatusInternalServerError, response{"error": "inventory_history_write_failed"})
@@ -703,7 +706,7 @@ func (s *Server) inventory(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusInternalServerError, response{"error": "inventory_normalization_failed"})
 		return
 	}
-	if in.Category == "system" {
+	if in.Category == "system" && historyChanged {
 		if err := s.refreshDynamicMemberships(r.Context(), tx, deviceID); err != nil {
 			write(w, http.StatusInternalServerError, response{"error": "group_membership_refresh_failed"})
 			return
@@ -724,6 +727,43 @@ func (s *Server) inventory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	write(w, http.StatusAccepted, response{"status": "accepted"})
+}
+
+func inventoryHistoryFingerprint(category string, payload []byte) []byte {
+	if category != "system" {
+		return payload
+	}
+	var data map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	if err := decoder.Decode(&data); err != nil {
+		return payload
+	}
+	delete(data, "observed_at")
+	delete(data, "uptime_seconds")
+	delete(data, "last_boot")
+	if memory, ok := data["memory"].(map[string]any); ok {
+		delete(memory, "available_bytes")
+		delete(memory, "used_bytes")
+	}
+	if root, ok := data["root_filesystem"].(map[string]any); ok {
+		delete(root, "free_bytes")
+		delete(root, "available_bytes")
+		delete(root, "used_bytes")
+	}
+	if batteries, ok := data["batteries"].([]any); ok {
+		for _, raw := range batteries {
+			if battery, ok := raw.(map[string]any); ok {
+				delete(battery, "status")
+				delete(battery, "capacity_percent")
+			}
+		}
+	}
+	canonical, err := json.Marshal(data)
+	if err != nil {
+		return payload
+	}
+	return canonical
 }
 
 type groupRule struct {
