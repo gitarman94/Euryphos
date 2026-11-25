@@ -655,6 +655,14 @@ func (s *Server) inventory(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 	observedAt := in.ObservedAt.UTC().Format(time.RFC3339Nano)
+	var previousPayload string
+	previousErr := tx.QueryRowContext(r.Context(), "SELECT payload FROM device_inventory WHERE device_id=? AND category=?",
+		r.PathValue("id"), in.Category).Scan(&previousPayload)
+	unchangedPayload := previousErr == nil && previousPayload == string(in.Payload)
+	if previousErr != nil && !errors.Is(previousErr, sql.ErrNoRows) {
+		write(w, http.StatusInternalServerError, response{"error":"inventory_current_read_failed"})
+		return
+	}
 	if _, err := tx.ExecContext(r.Context(), `INSERT INTO device_inventory_history(device_id, category, payload, observed_at)
 		VALUES (?, ?, ?, ?)`, r.PathValue("id"), in.Category, string(in.Payload), observedAt); err != nil {
 		write(w, http.StatusInternalServerError, response{"error": "inventory_history_write_failed"})
@@ -672,13 +680,19 @@ func (s *Server) inventory(w http.ResponseWriter, r *http.Request) {
 	}
 	deviceID := r.PathValue("id")
 	var normalizeErr error
-	switch in.Category {
-	case "system":
-		normalizeErr = s.applySystemInventory(r.Context(), tx, deviceID, in.Payload, observedAt)
-	case "network":
-		normalizeErr = s.applyNetworkInventory(r.Context(), tx, deviceID, in.Payload, observedAt)
-	case "software":
-		normalizeErr = s.applySoftwareInventory(r.Context(), tx, deviceID, in.Payload, observedAt)
+	if unchangedPayload && (in.Category=="network" || in.Category=="software") {
+		if in.Category=="software" {
+			_,normalizeErr=tx.ExecContext(r.Context(),"UPDATE installed_software SET last_seen_at=? WHERE device_id=?",observedAt,deviceID)
+		}
+	} else {
+		switch in.Category {
+		case "system":
+			normalizeErr = s.applySystemInventory(r.Context(), tx, deviceID, in.Payload, observedAt)
+		case "network":
+			normalizeErr = s.applyNetworkInventory(r.Context(), tx, deviceID, in.Payload, observedAt)
+		case "software":
+			normalizeErr = s.applySoftwareInventory(r.Context(), tx, deviceID, in.Payload, observedAt)
+		}
 	}
 	if normalizeErr != nil {
 		write(w, http.StatusInternalServerError, response{"error": "inventory_normalization_failed"})
@@ -852,10 +866,11 @@ func (s *Server) applySoftwareInventory(ctx context.Context, tx *sql.Tx, deviceI
 	var items []map[string]any
 	if err := json.Unmarshal(payload, &items); err != nil { return err }
 	if len(items) > 100000 { return errors.New("software inventory exceeds 100000 records") }
-	if _, err := tx.ExecContext(ctx, "DELETE FROM installed_software WHERE device_id=?", deviceID); err != nil { return err }
 	statement, err := tx.PrepareContext(ctx, `INSERT INTO installed_software(
 		device_id,name,name_normalized,version,publisher,package_manager,first_seen_at,last_seen_at
-	) VALUES (?,?,?,?,?,?,?,?)`)
+	) VALUES (?,?,?,?,?,?,?,?)
+	ON CONFLICT(device_id,name_normalized,version,package_manager) DO UPDATE SET
+		publisher=excluded.publisher,last_seen_at=excluded.last_seen_at`)
 	if err != nil { return err }
 	defer statement.Close()
 	for _, item := range items {
@@ -865,6 +880,7 @@ func (s *Server) applySoftwareInventory(ctx context.Context, tx *sql.Tx, deviceI
 		if _, err := statement.ExecContext(ctx, deviceID, name, strings.ToLower(name), version,
 			textValue(item["publisher"]), textValue(item["package_manager"]), observedAt, observedAt); err != nil { return err }
 	}
+	if _,err:=tx.ExecContext(ctx,"DELETE FROM installed_software WHERE device_id=? AND last_seen_at<?",deviceID,observedAt);err!=nil { return err }
 	_, err = tx.ExecContext(ctx, "UPDATE devices SET last_inventory_at=? WHERE id=?", observedAt, deviceID)
 	return err
 }
