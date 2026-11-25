@@ -4,11 +4,11 @@
 
 ## Present in this repository
 
-- Go server entry point only; the endpoint agent is distributed from the separate Euryphos-Agent project.
+- Go standard-library HTTP server and embedded browser-console handlers/assets; the endpoint agent remains separately distributed from the Euryphos-Agent project.
 - SQLite storage implementation using the pure-Go `modernc.org/sqlite` driver; PostgreSQL driver/configuration and Compose database service removed.
 - SQLite WAL, foreign keys, a 10-second busy timeout, bounded connection pool, local database path, and restrictive Unix file permissions.
 - Initial schema for devices, categorized inventory, jobs, job targets, and schema version tracking.
-- Enrollment, administrator approval/revocation, device authentication, heartbeat, categorized inventory upload, device listing, job creation/claiming, and job-result aggregation endpoints.
+- Enrollment, administrator approval/revocation, device authentication, heartbeat, categorized inventory upload, device listing/detail/history, normalized interface details (including DHCP facts), duplicate review/merge, groups, paginated job history, job creation/claiming, and job-result aggregation endpoints.
 - Server integration tests now run against the real `modernc.org/sqlite` driver in GitHub Actions and cover enrollment, approval, heartbeat, inventory, job dispatch/results, schema upgrades, typed inventory, group membership, duplicate detection/merge, audit, and history behavior.
 - Docker Compose deployment with a persistent local volume instead of a PostgreSQL container.
 - Updated product, architecture, distribution support matrix, installer audit, and completion-plan documentation.
@@ -20,9 +20,9 @@
 - The agent now has an initial Linux inventory provider for DMI identity, CPU/RAM, uptime/boot time, root filesystem, batteries where exposed, network interfaces, DNS/default gateway, and DPKG/RPM/pacman software inventory. Distribution-aware compatibility, Debian/apt detail, Fedora/dnf/dnf5 integration, Bazzite/rpm-ostree support, and all platform validation remain incomplete; no Linux distribution is certified.
 - Most privileged job executors are not implemented. Patch installation, software deployment/removal, configuration enforcement, service control, reboot/shutdown, and agent self-update remain incomplete.
 - No native macOS client exists yet; it is explicitly in the roadmap.
-- **Web UI:** an initial Go-served browser console is implemented at `/login` and `/console`. It includes fleet overview counts, searchable/paginated Devices, device approval/revocation, device detail with current inventory and change history, duplicate candidate review and explicit merge, group listing/creation/member viewing/deletion and static membership add/remove, group inventory-refresh jobs, paginated Jobs and per-device outcome views, and an audit log view. The console uses an eight-hour server-side session; the session cookie is HttpOnly/SameSite Strict, and unsafe cookie-authenticated API requests require a CSRF token. The configured admin bearer token is exchanged only during login and is not stored by the frontend. Advanced group edit/member administration, charts, live job monitoring, full responsive/accessibility review, SSO/MFA/RBAC, and multi-user identity remain outstanding.
+- **Web UI:** an initial Go-served browser console is implemented at `/login` and `/console`. It includes fleet overview counts, searchable/paginated Devices, device approval/revocation, device detail with current inventory and change history, duplicate candidate review and explicit merge, group listing/creation/edit/deletion, static membership add/remove, dynamic-rule JSON editing and reevaluation, group inventory-refresh jobs, paginated Jobs and per-device outcome views, and an audit log view. The console uses an eight-hour server-side session; the session cookie is HttpOnly/SameSite Strict, and unsafe cookie-authenticated API requests require a CSRF token. The configured admin bearer token is exchanged only during login and is not stored by the frontend. A visual multi-condition rule builder, bulk member selection, charts, live job monitoring, full responsive/accessibility review, SSO/MFA/RBAC, and multi-user identity remain outstanding.
 - **Device and job APIs:** the Devices list supports search, status/OS/directory/connection filters, allowlisted sorting, and bounded pagination. Jobs support bounded pagination with per-target state counters; job detail retains selected group snapshots and per-device results. Device detail returns typed columns plus latest inventory categories; history is change-only, cursor-paginated, and retains observations when a category payload changes. The initial browser console consumes these APIs. Activity aggregation, category freshness states, complete field presentation, and fleet metrics remain incomplete. The full field catalog is in `docs/DEVICE_MANAGEMENT_UI_SPEC.md`.
-- **Endpoint telemetry:** the agent now supplies an initial normalized subset of Linux hardware/CPU/memory/boot/storage/network, distribution identity, and SSSD/realmd directory facts, plus Windows CIM hardware/OS and AD domain/OU facts. Full inventory is still incomplete: certificates, all physical disks/volumes, services, security posture, sessions, metrics, NetworkManager/dhclient and other Linux DHCP-provider coverage, and full platform-specific coverage remain outstanding. GPS collection remains disabled/unimplemented. See the agent repository's `docs/TELEMETRY_COLLECTION_SPEC.md`.
+- **Endpoint telemetry:** the agent now supplies an initial normalized subset of Linux hardware/CPU/memory/boot/storage/network, distribution identity, and SSSD/realmd directory facts, plus Windows CIM hardware/OS and AD domain/OU facts. Full inventory is still incomplete: certificates, all physical disks/volumes, services, security posture, sessions, metrics, NetworkManager/dhclient and other Linux DHCP-provider coverage, and full platform-specific coverage remain outstanding. Windows CIM and Linux systemd-networkd DHCP facts are now collected; Linux expiry is flagged as estimated. GPS collection remains disabled/unimplemented. See the agent repository's `docs/TELEMETRY_COLLECTION_SPEC.md`.
 - There is no SSO/MFA/RBAC system, durable push channel, message broker, worker pool, complete compliance-grade audit system (retention, tamper evidence, export controls), or package repository. The browser currently uses a single configured administrator token exchanged for a bounded server-side session; this is not multi-user authentication or role-based authorization. An initial operational audit table and event coverage are implemented.
 - SQLite is a single-node embedded database with one writer at a time. Fleet-scale throughput, retention, backup/restore, integrity check, and recovery behavior still require measurement and tests.
 - SQLite module checksums are committed in `go.sum`; CI runs `go mod tidy` and validates the real driver-backed server.
@@ -37,14 +37,14 @@
 
 ## Validation status
 
-GitHub Actions run [45604879337](https://github.com/gitarman94/Euryphos/actions/runs/45604879337), on commit `54254076567fe54195a25b8c479fdbf09df600c8`, completed successfully on 2026-11-25. It passed:
+GitHub Actions run [45610216033](https://github.com/gitarman94/Euryphos/actions/runs/45610216033), on commit `f5db2e22176aac95d0b77c673c55cb4f1d889026`, completed successfully on 2026-11-25. It passed:
 
 - `go mod tidy`
 - `go test ./...`
 - `go vet ./...`
 - `go build -trimpath ./cmd/euryphos-server`
 
-The passing tests cover legacy SQLite migration, generated device IDs, exact 64-bit inventory values, device detail/history, search and presence filters, AD/Linux-compatible dynamic groups, group update/delete and group-targeted job expansion/history snapshots, duplicate candidates and serial fallback, rejection of OEM/unknown identity placeholders, explicit merge and old-token continuity, audit events (including atomic job-result audit), browser session creation/expiry/revocation behavior, CSRF enforcement, and change-only inventory-history behavior.
+The passing tests cover legacy SQLite migration and the DHCP interface-column upgrade, generated device IDs, exact 64-bit inventory values, device detail/history, DHCP normalization/detail response, search and presence filters, AD/Linux-compatible dynamic groups, group update/delete and static membership auditing, group-targeted job expansion/history snapshots, paginated job listing, duplicate review from either side and indexed identity query plans, rejection of OEM/unknown identity placeholders, explicit merge and old-token continuity, audit events (including atomic job-result audit), browser session/CSRF and root redirect behavior, served browser assets, JavaScript syntax, and change-only inventory-history behavior.
 
 Duplicate candidates are checked only when a device first supplies or changes hardware identity. Indexed SMBIOS UUID and serial/manufacturer/model lookups avoid repeating a fleet scan on ordinary telemetry refreshes.
 
@@ -71,14 +71,14 @@ Implemented in the server source:
 - `GET /api/v1/devices/{id}/inventory/history` returns bounded, cursor-paginated snapshots with optional category filtering.
 - SQLite indexes support device/category timeline reads. Existing databases receive the table through the server's startup migration routine.
 
-Integration assertions now cover latest-value replacement, historical paging, and safe detail responses. They have not yet been executed in a build environment.
+Integration assertions for latest-value replacement, historical paging, and safe detail responses run in the current GitHub Actions validation workflow.
 
 
 ## First device inventory foundation milestone
 
 The server now writes each accepted inventory submission transactionally to an append-only `device_inventory_history` table while updating the existing latest-value `device_inventory` row. New administrator APIs return device detail and bounded, cursor-paginated inventory history. An SQLite migration creates the history table and indexes on existing installations.
 
-Server integration tests were extended to cover latest-payload replacement, history paging, and exclusion of credential hashes from the detail API. The test suite has not been executed in this environment.
+Server integration tests cover latest-payload replacement, history paging, and exclusion of credential hashes from the detail API; the current server CI runs these tests against the real SQLite driver.
 
 
 ## Device list API implementation
