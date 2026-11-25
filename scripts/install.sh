@@ -210,28 +210,47 @@ if [[ -e "$CURRENT_LINK" && ! -L "$CURRENT_LINK" ]]; then
   die "$CURRENT_LINK exists but is not a symbolic link; refusing to replace it."
 fi
 
+# Refresh systemd's view before deciding whether there is a service to stop.
+systemctl daemon-reload || die "Could not reload systemd unit definitions."
+
+UNIT_LOAD_STATE="$(systemctl show "$SERVICE" --property=LoadState --value 2>/dev/null || true)"
+UNIT_ACTIVE_STATE="not-loaded"
+if [[ "$UNIT_LOAD_STATE" == "loaded" ]]; then
+  UNIT_ACTIVE_STATE="$(systemctl show "$SERVICE" --property=ActiveState --value 2>/dev/null || true)"
+fi
+
 WAS_INSTALLED=0
-if [[ -n "$OLD_TARGET" || -f "/etc/systemd/system/${SERVICE}" ]]; then
+SERVICE_WAS_ACTIVE=0
+if [[ -n "$OLD_TARGET" || "$UNIT_LOAD_STATE" == "loaded" ]]; then
   WAS_INSTALLED=1
 fi
 
-if [[ "$WAS_INSTALLED" -eq 1 ]]; then
-  log "Stopping the existing service before backing up SQLite."
-  systemctl stop "$SERVICE" || die "Could not stop $SERVICE; the existing installation was left in place."
-fi
+case "$UNIT_ACTIVE_STATE" in
+  active|activating|reloading|deactivating)
+    SERVICE_WAS_ACTIVE=1
+    log "Stopping the active Euryphos service before backing up SQLite."
+    systemctl stop "$SERVICE" || die "Could not stop active $SERVICE; the existing installation was left in place."
+    ;;
+  inactive|failed|dead|not-loaded)
+    log "No running Euryphos service needs to be stopped (systemd state: $UNIT_ACTIVE_STATE)."
+    ;;
+  *)
+    die "Cannot safely determine whether $SERVICE is running (load state: $UNIT_LOAD_STATE; active state: $UNIT_ACTIVE_STATE)."
+    ;;
+esac
 
 BACKUP_PATH=""
 if [[ -s "$DB_PATH" ]]; then
-  BACKUP_PATH="${BACKUP_DIR}/euryphos-$(date -u +%Y%m%dT%H%M%SZ)-${VERSION_DIR_NAME}.sqlite"
+  BACKUP_PATH="\${BACKUP_DIR}/euryphos-$(date -u +%Y%m%dT%H%M%SZ)-\${VERSION_DIR_NAME}.sqlite"
   log "Creating a consistent SQLite backup at $BACKUP_PATH."
   if ! sqlite3 "$DB_PATH" ".backup '$BACKUP_PATH'"; then
-    [[ "$WAS_INSTALLED" -eq 0 ]] || systemctl start "$SERVICE" || true
+    if [[ "$SERVICE_WAS_ACTIVE" -eq 1 ]]; then systemctl start "$SERVICE" || true; fi
     die "SQLite backup failed; the active application version was not changed."
   fi
   BACKUP_CHECK="$(sqlite3 "$BACKUP_PATH" 'PRAGMA integrity_check;' 2>/dev/null || true)"
   if [[ "$BACKUP_CHECK" != "ok" ]]; then
     rm -f "$BACKUP_PATH"
-    [[ "$WAS_INSTALLED" -eq 0 ]] || systemctl start "$SERVICE" || true
+    if [[ "$SERVICE_WAS_ACTIVE" -eq 1 ]]; then systemctl start "$SERVICE" || true; fi
     die "SQLite backup integrity check failed; the active application version was not changed."
   fi
   chown root:root "$BACKUP_PATH"
@@ -264,7 +283,11 @@ restore_previous_installation() {
   fi
   systemctl daemon-reload
   if [[ -n "$OLD_TARGET" && -x "${OLD_TARGET}/euryphos-server" ]]; then
-    systemctl start "$SERVICE" || log "WARNING: the previous service version did not restart automatically."
+    if [[ "$SERVICE_WAS_ACTIVE" -eq 1 ]]; then
+      systemctl start "$SERVICE" || log "WARNING: the previous service version did not restart automatically."
+    else
+      log "The previous service was not running before the update; leaving it stopped after rollback."
+    fi
   else
     systemctl disable "$SERVICE" >/dev/null 2>&1 || true
   fi
