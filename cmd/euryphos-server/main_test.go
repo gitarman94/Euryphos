@@ -503,6 +503,12 @@ func TestBrowserSessionRequiresCSRFAndSupportsConsole(t *testing.T) {
 	server := &Server{db:db,adminToken:"admin-test-token",cookieSecure:false}
 	handler := securityHeaders(routes(server))
 
+	rootResponse := httptest.NewRecorder()
+	handler.ServeHTTP(rootResponse, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rootResponse.Code != http.StatusSeeOther || rootResponse.Header().Get("Location") != "/login" {
+		t.Fatalf("unauthenticated root did not redirect to login: status=%d location=%q", rootResponse.Code, rootResponse.Header().Get("Location"))
+	}
+
 	loginPage := httptest.NewRecorder()
 	handler.ServeHTTP(loginPage, httptest.NewRequest(http.MethodGet, "/login", nil))
 	if loginPage.Code != http.StatusOK || !strings.Contains(loginPage.Body.String(), "Sign in to Euryphos") {
@@ -525,6 +531,14 @@ func TestBrowserSessionRequiresCSRFAndSupportsConsole(t *testing.T) {
 	if sessionCookie == nil || csrfCookie == nil || !sessionCookie.HttpOnly ||
 		sessionCookie.SameSite != http.SameSiteStrictMode || csrfCookie.HttpOnly {
 		t.Fatalf("session cookies missing or insecure: session=%#v csrf=%#v",sessionCookie,csrfCookie)
+	}
+
+	authenticatedRoot := httptest.NewRequest(http.MethodGet, "/", nil)
+	authenticatedRoot.AddCookie(sessionCookie)
+	authenticatedRootResponse := httptest.NewRecorder()
+	handler.ServeHTTP(authenticatedRootResponse, authenticatedRoot)
+	if authenticatedRootResponse.Code != http.StatusSeeOther || authenticatedRootResponse.Header().Get("Location") != "/console" {
+		t.Fatalf("authenticated root did not redirect to console: status=%d location=%q", authenticatedRootResponse.Code, authenticatedRootResponse.Header().Get("Location"))
 	}
 
 	consoleRequest := httptest.NewRequest(http.MethodGet, "/console", nil)
