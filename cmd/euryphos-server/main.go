@@ -2411,6 +2411,27 @@ func (s *Server) mergeDevice(w http.ResponseWriter, r *http.Request) {
 	write(w,http.StatusOK,response{"status":"merged","device_id":sourceID,"canonical_device_id":in.CanonicalDeviceID})
 }
 
+func validServiceControlPayload(payload []byte) bool {
+	var request struct {
+		ServiceName string `json:"service_name"`
+		Operation string `json:"operation"`
+	}
+	if err:=json.Unmarshal(payload,&request);err!=nil{return false}
+	name:=strings.TrimSpace(request.ServiceName)
+	if len(name)<1 || len(name)>256{return false}
+	for _,char:=range name{
+		if !(char>='a'&&char<='z'||char>='A'&&char<='Z'||char>='0'&&char<='9'||strings.ContainsRune("._@:-",char)){
+			return false
+		}
+	}
+	switch strings.ToLower(strings.TrimSpace(request.Operation)){
+	case "start","stop","restart","enable","disable":
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Server) createJob(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Action    string          `json:"action"`
@@ -2437,6 +2458,11 @@ func (s *Server) createJob(w http.ResponseWriter, r *http.Request) {
 	}
 	if !json.Valid(payload) {
 		write(w, http.StatusBadRequest, response{"error": "invalid_payload"})
+		return
+	}
+	if in.Action=="service.control" && !validServiceControlPayload(payload) {
+		write(w,http.StatusBadRequest,response{"error":"invalid_service_control_payload",
+			"allowed_operations":[]string{"start","stop","restart","enable","disable"}})
 		return
 	}
 	id := uuid()
