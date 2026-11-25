@@ -422,6 +422,7 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_devices_hostname ON devices(hostname)`,
 		`CREATE INDEX IF NOT EXISTS idx_inventory_category ON device_inventory(category)`,
 		`CREATE INDEX IF NOT EXISTS idx_job_targets_device_status ON job_targets(device_id, status)`,
+		`CREATE INDEX IF NOT EXISTS idx_job_targets_device_lease ON job_targets(device_id, status, updated_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_jobs_status_created ON jobs(status, created_at)`,
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (1)`,
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (2)`,
@@ -2531,20 +2532,54 @@ func (s *Server) createJob(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) nextJob(w http.ResponseWriter, r *http.Request) {
+	const receiveLeaseMinutes = 10
+	deviceID := r.PathValue("id")
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "job_claim_failed"})
+		return
+	}
+	defer tx.Rollback()
+
+	// A delivery that was claimed but never completed is returned to the queue
+	// when this endpoint checks in again after the receive lease expires. Scope
+	// recovery to this device so an ordinary poll does not scan the whole fleet.
+	recovered, err := tx.ExecContext(r.Context(), `UPDATE job_targets
+		SET status = 'queued', updated_at = CURRENT_TIMESTAMP
+		WHERE device_id = ? AND status = 'received'
+			AND updated_at < datetime('now', '-10 minutes')
+			AND job_id IN (SELECT id FROM jobs WHERE status IN ('queued', 'running'))`, deviceID)
+	if err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "job_lease_recovery_failed"})
+		return
+	}
+	if count, countErr := recovered.RowsAffected(); countErr == nil && count > 0 {
+		if err := auditEvent(r.Context(), tx, r, "system", "job-lease-recovery", "job.target.requeued", "success",
+			"device", deviceID, map[string]any{"requeued_targets": count, "lease_minutes": receiveLeaseMinutes}); err != nil {
+			write(w, http.StatusInternalServerError, response{"error": "audit_write_failed"})
+			return
+		}
+	}
+
 	var jobID string
-	// A single UPDATE ... RETURNING atomically claims a queued job target. SQLite
-	// has one writer at a time; this avoids PostgreSQL-only SKIP LOCKED semantics.
-	err := s.db.QueryRowContext(r.Context(), `UPDATE job_targets
+	// UPDATE ... RETURNING atomically claims the next queued target. Jobs that
+	// already have another running target may still deliver work to remaining
+	// devices in the same fleet job.
+	err = tx.QueryRowContext(r.Context(), `UPDATE job_targets
 		SET status = 'received', updated_at = CURRENT_TIMESTAMP
 		WHERE rowid = (
 			SELECT t.rowid FROM job_targets t
 			JOIN jobs j ON j.id = t.job_id
-			WHERE t.device_id = ? AND t.status = 'queued' AND j.status = 'queued'
+			WHERE t.device_id = ? AND t.status = 'queued' AND j.status IN ('queued', 'running')
 			ORDER BY j.created_at LIMIT 1
 		)
 		AND status = 'queued'
-		RETURNING job_id`, r.PathValue("id")).Scan(&jobID)
+		RETURNING job_id`, deviceID).Scan(&jobID)
 	if errors.Is(err, sql.ErrNoRows) {
+		if err := tx.Commit(); err != nil {
+			write(w, http.StatusInternalServerError, response{"error": "job_claim_commit_failed"})
+			return
+		}
 		write(w, http.StatusOK, response{"job": nil})
 		return
 	}
@@ -2554,8 +2589,12 @@ func (s *Server) nextJob(w http.ResponseWriter, r *http.Request) {
 	}
 	var action string
 	var payload []byte
-	if err := s.db.QueryRowContext(r.Context(), "SELECT action, payload FROM jobs WHERE id = ?", jobID).Scan(&action, &payload); err != nil {
+	if err := tx.QueryRowContext(r.Context(), "SELECT action, payload FROM jobs WHERE id = ?", jobID).Scan(&action, &payload); err != nil {
 		write(w, http.StatusInternalServerError, response{"error": "job_load_failed"})
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "job_claim_commit_failed"})
 		return
 	}
 	write(w, http.StatusOK, response{"job": map[string]any{"id": jobID, "action": action, "payload": json.RawMessage(payload)}})
