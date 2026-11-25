@@ -832,7 +832,7 @@ func (s *Server) applySystemInventory(ctx context.Context, tx *sql.Tx, deviceID 
 	if err := tx.QueryRowContext(ctx, "SELECT serial_number,smbios_uuid,manufacturer,model FROM devices WHERE id=?", deviceID).
 		Scan(&oldSerial,&oldUUID,&oldManufacturer,&oldModel); err != nil { return err }
 	newSerial := usableIdentity(textValue(hardware["serial_number"]))
-	newUUID := normalizeIdentity(textValue(hardware["smbios_uuid"]))
+	newUUID := normalizeIdentity(usableIdentity(textValue(hardware["smbios_uuid"])))
 	if strings.Trim(newUUID,"0")=="" || strings.Trim(newUUID,"f")=="" { newUUID="" }
 	newManufacturer := usableIdentity(textValue(hardware["manufacturer"]))
 	newModel := usableIdentity(textValue(hardware["model"]))
@@ -988,7 +988,7 @@ func (s *Server) recordDuplicateCandidates(ctx context.Context, tx *sql.Tx, devi
 	if err := tx.QueryRowContext(ctx, "SELECT serial_number,smbios_uuid,manufacturer,model FROM devices WHERE id=?", deviceID).
 		Scan(&serial,&uuidValue,&manufacturer,&model); err != nil { return err }
 	serial = usableIdentity(serial)
-	uuidValue = normalizeIdentity(uuidValue)
+	uuidValue = normalizeIdentity(usableIdentity(uuidValue))
 	if strings.Trim(uuidValue,"0") == "" || strings.Trim(uuidValue,"f") == "" { uuidValue = "" }
 	manufacturer, model = usableIdentity(manufacturer), usableIdentity(model)
 	if uuidValue == "" && (serial == "" || manufacturer == "" || model == "") { return nil }
