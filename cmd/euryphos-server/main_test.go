@@ -356,6 +356,37 @@ func requestJobAlertQueue(t *testing.T, handler http.Handler) (int64, string, st
 	return queue.Items[0].ID, queue.Items[0].ClaimID, string(raw)
 }
 
+func TestJobClaimResolutionOnlyRetiresReclaimedUnstartedClaims(t *testing.T) {
+	db, err := openDatabase(filepath.Join(t.TempDir(), "job-claim-resolution.db"))
+	if err != nil { t.Fatal(err) }
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := migrate(ctx, db); err != nil { t.Fatal(err) }
+
+	const jobID = "job-claim-resolution"
+	const deviceID = "device-claim-resolution"
+	const claimID = "66666666-6666-4666-8666-666666666666"
+	const deviceToken = "claim-resolution-device-token"
+	seedOverdueJobAlertFixture(t, db, jobID, deviceID, "inventory.refresh", "{}", claimID, deviceToken)
+	if _, err := db.ExecContext(ctx, "UPDATE job_targets SET status='queued',claim_id=NULL,updated_at=CURRENT_TIMESTAMP WHERE job_id=? AND device_id=?", jobID, deviceID); err != nil {
+		t.Fatal(err)
+	}
+	handler := securityHeaders(routes(&Server{db:db,adminToken:"admin-test-token"}))
+	path := "/api/v1/devices/"+deviceID+"/jobs/"+jobID+"/claims/"+claimID
+	unauthorized := performRequest(t, handler, http.MethodGet, path, "", "", http.StatusUnauthorized)
+	if strings.Contains(string(unauthorized), `"journal_action"`) {
+		t.Fatalf("claim-resolution route exposed device state without authentication: %s", unauthorized)
+	}
+	body := performRequest(t, handler, http.MethodGet, path, deviceToken, "", http.StatusOK)
+	if !strings.Contains(string(body), `"journal_action":"retire_if_not_started"`) {
+		t.Fatalf("reclaimed unstarted claim did not return restricted retirement instruction: %s", body)
+	}
+	if !strings.Contains(string(body), `"current_claim_id":""`) {
+		t.Fatalf("reclaimed claim response did not report the empty active claim: %s", body)
+	}
+}
+
 func TestJobAlertQueueAcknowledgementAndHeartbeatRecovery(t *testing.T) {
 	db, err := openDatabase(filepath.Join(t.TempDir(), "job-alert-ack.db"))
 	if err != nil { t.Fatal(err) }
