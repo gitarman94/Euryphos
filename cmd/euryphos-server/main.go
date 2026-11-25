@@ -713,8 +713,9 @@ func (s *Server) inventory(w http.ResponseWriter, r *http.Request) {
 	if _, err := tx.ExecContext(r.Context(), `UPDATE devices
 		SET last_seen = ?,
 		    first_connected_at = COALESCE(first_connected_at, ?),
-		    last_connected_at = ?
-		WHERE id = ?`, receivedAt, receivedAt, receivedAt, r.PathValue("id")); err != nil {
+		    last_connected_at = ?,
+		    last_inventory_at = ?
+		WHERE id = ?`, receivedAt, receivedAt, receivedAt, receivedAt, r.PathValue("id")); err != nil {
 		write(w, http.StatusInternalServerError, response{"error": "device_last_seen_update_failed"})
 		return
 	}
