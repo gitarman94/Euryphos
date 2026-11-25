@@ -14,7 +14,7 @@ DATA_DIR="/var/lib/euryphos"
 BACKUP_DIR="${DATA_DIR}/backups"
 SERVICE="euryphos.service"
 MODE="${1:-install}"
-INSTALLER_REVISION="2026-11-25.2"
+INSTALLER_REVISION="2026-11-25.3"
 
 log() { printf '[euryphos] %s\n' "$*"; }
 die() { printf '[euryphos] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -295,34 +295,55 @@ restore_previous_installation() {
   fi
 }
 
+show_service_diagnostics() {
+  log "Service diagnostics:"
+  systemctl status "$SERVICE" --no-pager -l 2>&1 | tail -n 60 || true
+  log "Recent service journal:"
+  journalctl -u "$SERVICE" -n 80 --no-pager 2>&1 | tail -n 80 || true
+}
+
 atomic_link "$NEW_RELEASE"
 install -o root -g root -m 0644 "${NEW_RELEASE}/euryphos.service" "/etc/systemd/system/${SERVICE}"
-systemctl daemon-reload
-systemctl enable "$SERVICE"
-if ! systemctl start "$SERVICE"; then
+log "Reloading systemd and enabling ${SERVICE}."
+systemctl daemon-reload || die "systemd could not reload the Euryphos service definition."
+systemctl enable "$SERVICE" || die "systemd could not enable ${SERVICE}."
+log "Requesting service startup (non-blocking); the installer will report health-check progress."
+if ! systemctl start --no-block "$SERVICE"; then
+  show_service_diagnostics
   restore_previous_installation
-  die "The new service failed to start. The previous installation was restored when available."
+  die "systemd could not queue the new service start. The previous installation was restored when available."
 fi
 
 LISTEN_ADDR="$(read_env_value EURYPHOS_LISTEN)"
 LISTEN_ADDR="${LISTEN_ADDR:-:8080}"
 PORT="${LISTEN_ADDR##*:}"
 [[ "$PORT" =~ ^[0-9]{1,5}$ && "$PORT" -gt 0 && "$PORT" -le 65535 ]] || {
+  show_service_diagnostics
   restore_previous_installation
   die "EURYPHOS_LISTEN must end in a TCP port number for the installer health check."
 }
+log "Waiting for the local health endpoint on 127.0.0.1:${PORT} (up to 120 seconds)."
 HEALTHY=0
 for attempt in {1..120}; do
-  if curl -fsS --max-time 2 "http://127.0.0.1:${PORT}/api/health" 2>/dev/null | jq -e '.status == "ok"' >/dev/null 2>&1; then
+  if curl -fsS --connect-timeout 2 --max-time 3 "http://127.0.0.1:${PORT}/api/health" 2>/dev/null | jq -e '.status == "ok"' >/dev/null 2>&1; then
     HEALTHY=1
     break
+  fi
+  if (( attempt % 10 == 0 )); then
+    ACTIVE_STATE="$(systemctl show "$SERVICE" --property=ActiveState --value 2>/dev/null || true)"
+    SUB_STATE="$(systemctl show "$SERVICE" --property=SubState --value 2>/dev/null || true)"
+    log "Health check pending (${attempt}/120 seconds; systemd state: ${ACTIVE_STATE:-unknown}/${SUB_STATE:-unknown})."
+    if [[ "$ACTIVE_STATE" == "failed" ]]; then
+      break
+    fi
   fi
   sleep 1
 done
 
 if [[ "$HEALTHY" -ne 1 ]]; then
+  show_service_diagnostics
   restore_previous_installation
-  die "Health check failed for $VERSION. Check 'journalctl -u $SERVICE' for details."
+  die "Health check failed for $VERSION. The diagnostics above show why the service did not become healthy."
 fi
 
 chown euryphos:euryphos "$DATA_DIR"
