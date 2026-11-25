@@ -160,7 +160,7 @@ Current server-derived presence values include online, offline, never-connected,
 
 ### Audit
 
-Initial audit coverage includes administrator login success/failure, enrollment, approval/revocation, group mutation, job creation/results, duplicate merges, and the job-alert lifecycle (`job.alert.overdue`, `job.alert.acknowledged`, `job.alert.recovered`, `job.alert.closed`, `job.target.marked_indeterminate`, and `job.target.retry_authorized`). This is an operational audit foundation only. It is not immutable, tamper-evident, retention-governed, or compliance-complete.
+Initial audit coverage includes administrator login success/failure, enrollment, approval/revocation, group mutation, job creation/results, duplicate merges, and the job-alert lifecycle (`job.alert.overdue`, `job.alert.acknowledged`, `job.alert.recovered`, `job.alert.closed`, `job.target.marked_indeterminate`, `job.target.retry_authorized`, and `job.target.retry_rejected` (denied non-idempotent retry attempts)). This is an operational audit foundation only. It is not immutable, tamper-evident, retention-governed, or compliance-complete.
 
 ### Groups and fleet targeting
 
@@ -262,6 +262,7 @@ The following source and regression-test commits are now on the server repositor
 - `e2621396c22b3b4d8e927348c6cac6a7d0318f98` — bounded alert reconciliation batches and throttled last-seen updates.
 - `bffde59e20b7264b6ab13b7a44e40a6f4e0ab114` — device-authenticated claim-resolution response for agent journal retirement.
 - `993af998837690ee87a36161422f1cc81b344ef6`, `2754ab7ba856a7b2e15823090fd5776e088b71d2` — regression coverage for administrator-authorized journal retirement and receive-lease reclaim.
+- `22f6d0593e1944f04cff8a38d8ff0e9c19ea434f`, `dc9217d41bfee8a1d41b97c03cabb660b6213109` — audit and test denied non-idempotent retry attempts.
 
 The corresponding agent commits are `f8122ac58801f8e286ac7e30c2a1989e4d2aa5b3`, `f786a4faad149f0a6f3ae4d04f1f20fb0f8d6898`, `602a41f5c76c7bac95dc2c06aaea22b59249a2bc`, and `cebed6eb687530ada40c4c5385bd02e20bafcacc`. These implement the claim-resolution handshake and agent regression tests. **No CI result has yet been verified for these newest commits in this work session.** The earlier successful run `45630111011` predates them and is not evidence that this change set passes.
 
