@@ -795,6 +795,74 @@ func TestMigrationAddsDHCPColumnsToExistingNetworkTable(t *testing.T) {
 	}
 }
 
+func TestStorageInventoryNormalizationDetailAndUnavailablePreservation(t *testing.T) {
+	db, err := openDatabase(filepath.Join(t.TempDir(), "storage.db"))
+	if err != nil { t.Fatal(err) }
+	defer db.Close()
+	ctx,cancel:=context.WithTimeout(context.Background(),10*time.Second)
+	defer cancel()
+	if err:=migrate(ctx,db);err!=nil { t.Fatal(err) }
+	if _,err:=db.Exec("INSERT INTO devices(id,hostname,status) VALUES('storage-device','storage-host','approved')");err!=nil { t.Fatal(err) }
+	observedAt:=time.Now().UTC().Format(time.RFC3339Nano)
+	payload:=[]byte(`{
+		"schema_version":1,"collection_status":"collected",
+		"disks":[
+			{"key":"disk0","name":"nvme0n1","model":"Example NVMe","manufacturer":"Example","serial_number":"NVME-123","interface_type":"nvme","capacity_bytes":18014398509481985,"logical_block_size":4096,"is_removable":false,"is_rotational":false,"status":"present"}
+		],
+		"volumes":[
+			{"key":"rootfs","name":"root","parent_key":"disk0","device":"/dev/nvme0n1p2","filesystem":"ext4","mount_point":"/","capacity_bytes":1099511627777,"free_bytes":549755813889,"available_bytes":549755800000,"used_bytes":549755813888,"block_size":4096,"is_read_only":false,"status":"mounted"},
+			{"key":"data-volume","name":"data","parent_key":"disk0","device":"/dev/nvme0n1p3","filesystem":"xfs","mount_point":"/data","capacity_bytes":107374182400,"free_bytes":53687091200,"available_bytes":53687000000,"used_bytes":53687091200,"block_size":4096,"is_read_only":true,"status":"mounted"}
+		]
+	}`)
+	tx,err:=db.BeginTx(ctx,nil)
+	if err!=nil { t.Fatal(err) }
+	if err:=(&Server{db:db}).applyStorageInventory(ctx,tx,"storage-device",payload,observedAt);err!=nil {
+		tx.Rollback()
+		t.Fatalf("apply storage inventory: %v",err)
+	}
+	if err:=tx.Commit();err!=nil { t.Fatal(err) }
+
+	var diskCapacity,volumeCapacity,volumeFree int64
+	if err:=db.QueryRow("SELECT capacity_bytes FROM device_storage_disks WHERE device_id='storage-device' AND disk_key='disk0'").Scan(&diskCapacity);err!=nil { t.Fatal(err) }
+	if err:=db.QueryRow("SELECT capacity_bytes,free_bytes FROM device_storage_volumes WHERE device_id='storage-device' AND volume_key='rootfs'").Scan(&volumeCapacity,&volumeFree);err!=nil { t.Fatal(err) }
+	if diskCapacity!=18014398509481985 || volumeCapacity!=1099511627777 || volumeFree!=549755813889 {
+		t.Fatalf("storage byte values lost precision: disk=%d volume=%d free=%d",diskCapacity,volumeCapacity,volumeFree)
+	}
+
+	unavailable:=[]byte(`{"schema_version":1,"collection_status":"unavailable","disks":[],"volumes":[]}`)
+	tx,err=db.BeginTx(ctx,nil)
+	if err!=nil { t.Fatal(err) }
+	if err:=(&Server{db:db}).applyStorageInventory(ctx,tx,"storage-device",unavailable,time.Now().UTC().Format(time.RFC3339Nano));err!=nil {
+		tx.Rollback()
+		t.Fatalf("unavailable storage should be accepted without clearing known data: %v",err)
+	}
+	if err:=tx.Commit();err!=nil { t.Fatal(err) }
+	var diskCount,volumeCount int
+	if err:=db.QueryRow("SELECT count(*) FROM device_storage_disks WHERE device_id='storage-device'").Scan(&diskCount);err!=nil { t.Fatal(err) }
+	if err:=db.QueryRow("SELECT count(*) FROM device_storage_volumes WHERE device_id='storage-device'").Scan(&volumeCount);err!=nil { t.Fatal(err) }
+	if diskCount!=1 || volumeCount!=2 { t.Fatalf("unavailable collection erased known storage: disks=%d volumes=%d",diskCount,volumeCount) }
+
+	handler:=securityHeaders(routes(&Server{db:db,adminToken:"admin-test-token"}))
+	detail:=performRequest(t,handler,http.MethodGet,"/api/v1/devices/storage-device","admin-test-token","",http.StatusOK)
+	for _,expected:=range []string{`"storage_disks"`,`"storage_volumes"`,`"model":"Example NVMe"`,`"mount_point":"/data"`,`"is_read_only":true`} {
+		if !strings.Contains(string(detail),expected) { t.Fatalf("device detail missing %s: %s",expected,detail) }
+	}
+}
+
+func TestStorageMigrationCreatesNormalizedTables(t *testing.T) {
+	db,err:=openDatabase(filepath.Join(t.TempDir(),"storage-migration.db"))
+	if err!=nil { t.Fatal(err) }
+	defer db.Close()
+	ctx,cancel:=context.WithTimeout(context.Background(),10*time.Second)
+	defer cancel()
+	if err:=migrate(ctx,db);err!=nil { t.Fatal(err) }
+	for _,table:=range []string{"device_storage_disks","device_storage_volumes"} {
+		var count int
+		if err:=db.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?",table).Scan(&count);err!=nil { t.Fatal(err) }
+		if count!=1 { t.Fatalf("storage migration did not create table %s",table) }
+	}
+}
+
 func performRequest(t *testing.T, handler http.Handler, method, path, token, body string, expectedStatus int) []byte {
 	t.Helper()
 	var requestBody *bytes.Reader
