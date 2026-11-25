@@ -286,6 +286,7 @@ func migrate(ctx context.Context, db *sql.DB) error {
 			dhcp_enabled INTEGER NOT NULL DEFAULT 0,
 			dhcp_server TEXT NOT NULL DEFAULT '',
 			dhcp_lease_expires TEXT NOT NULL DEFAULT '',
+			dhcp_lease_expiry_estimated INTEGER NOT NULL DEFAULT 0,
 			mtu INTEGER,
 			observed_at TEXT NOT NULL,
 			UNIQUE(device_id, interface_key)
@@ -369,6 +370,7 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (6)`,
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (7)`,
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (8)`,
+		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (9)`,
 	}
 	for _, statement := range statements {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
@@ -433,6 +435,7 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		{name: "dhcp_enabled", definition: "INTEGER NOT NULL DEFAULT 0"},
 		{name: "dhcp_server", definition: "TEXT NOT NULL DEFAULT ''"},
 		{name: "dhcp_lease_expires", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "dhcp_lease_expiry_estimated", definition: "INTEGER NOT NULL DEFAULT 0"},
 	} {
 		if err := ensureTableColumn(ctx, tx, "device_network_interfaces", column.name, column.definition); err != nil {
 			return err
@@ -1114,21 +1117,22 @@ func (s *Server) applyNetworkInventory(ctx context.Context, tx *sql.Tx, deviceID
 		if key == "" { key = strconv.Itoa(index) }
 		dhcp := dhcpByName[name]
 		if dhcp == nil { dhcp = dhcpByIndex[key] }
-		dhcpEnabled, dhcpServer, dhcpLease := 0, "", ""
+		dhcpEnabled, dhcpServer, dhcpLease, dhcpExpiryEstimated := 0, "", "", 0
 		if dhcp != nil {
 			dhcpEnabled = boolInt(dhcp["dhcp_enabled"])
 			dhcpServer = textValue(dhcp["dhcp_server"])
 			dhcpLease = textValue(dhcp["dhcp_lease_expires"])
+			dhcpExpiryEstimated = boolInt(dhcp["dhcp_lease_expiry_estimated"])
 		}
 		addresses := item["addresses"]
 		addressJSON, _ := json.Marshal(addresses)
 		mtu := integerValue(item["mtu"])
 		if _, err := tx.ExecContext(ctx, `INSERT INTO device_network_interfaces(
 			device_id,interface_key,name,mac_address,connection_type,state,addresses_json,
-			dhcp_enabled,dhcp_server,dhcp_lease_expires,mtu,observed_at
-		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, deviceID,key,name,textValue(item["mac_address"]),
+			dhcp_enabled,dhcp_server,dhcp_lease_expires,dhcp_lease_expiry_estimated,mtu,observed_at
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, deviceID,key,name,textValue(item["mac_address"]),
 			textValue(item["connection_type"]),textValue(item["status"]),string(addressJSON),
-			dhcpEnabled,dhcpServer,dhcpLease,mtu,observedAt); err != nil { return err }
+			dhcpEnabled,dhcpServer,dhcpLease,dhcpExpiryEstimated,mtu,observedAt); err != nil { return err }
 		if macAddress == "" && textValue(item["mac_address"]) != "" { macAddress = textValue(item["mac_address"]) }
 		if connectionType == "" && textValue(item["status"]) == "up" { connectionType = textValue(item["connection_type"]) }
 		if localIP == "" {
@@ -1517,7 +1521,7 @@ func (s *Server) deviceDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	if err:=inventoryRows.Err();err!=nil { write(w,http.StatusInternalServerError,response{"error":"inventory_read_failed"});return }
 	interfaceRows, err := s.db.QueryContext(r.Context(), `SELECT interface_key,name,mac_address,connection_type,state,addresses_json,
-		dhcp_enabled,dhcp_server,dhcp_lease_expires,mtu,observed_at
+		dhcp_enabled,dhcp_server,dhcp_lease_expires,dhcp_lease_expiry_estimated,mtu,observed_at
 		FROM device_network_interfaces WHERE device_id=? ORDER BY name COLLATE NOCASE`, r.PathValue("id"))
 	if err != nil {
 		write(w,http.StatusInternalServerError,response{"error":"network_interfaces_read_failed"})
@@ -1527,9 +1531,9 @@ func (s *Server) deviceDetail(w http.ResponseWriter, r *http.Request) {
 	networkInterfaces := []map[string]any{}
 	for interfaceRows.Next() {
 		var key,name,mac,connectionType,state,addresses,dhcpServer,leaseExpires,observedAt string
-		var dhcpEnabled int
+		var dhcpEnabled, dhcpExpiryEstimated int
 		var mtu sql.NullInt64
-		if err := interfaceRows.Scan(&key,&name,&mac,&connectionType,&state,&addresses,&dhcpEnabled,&dhcpServer,&leaseExpires,&mtu,&observedAt); err != nil {
+		if err := interfaceRows.Scan(&key,&name,&mac,&connectionType,&state,&addresses,&dhcpEnabled,&dhcpServer,&leaseExpires,&dhcpExpiryEstimated,&mtu,&observedAt); err != nil {
 			write(w,http.StatusInternalServerError,response{"error":"network_interfaces_read_failed"})
 			return
 		}
@@ -1538,7 +1542,8 @@ func (s *Server) deviceDetail(w http.ResponseWriter, r *http.Request) {
 		networkInterfaces = append(networkInterfaces,map[string]any{
 			"interface_key":key,"name":name,"mac_address":mac,"connection_type":connectionType,
 			"state":state,"addresses":json.RawMessage(addresses),"dhcp_enabled":dhcpEnabled!=0,
-			"dhcp_server":dhcpServer,"dhcp_lease_expires":leaseExpires,"mtu":mtuValue,
+			"dhcp_server":dhcpServer,"dhcp_lease_expires":leaseExpires,
+			"dhcp_lease_expiry_estimated":dhcpExpiryEstimated!=0,"mtu":mtuValue,
 			"observed_at":observedAt,
 		})
 	}
