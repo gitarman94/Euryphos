@@ -56,3 +56,15 @@
 ## Device management UI and complete inventory requirements
 
 Device list and full device-detail requirements are specified in `docs/DEVICE_MANAGEMENT_UI_SPEC.md`. The current repository still has no browser UI or device detail API. The endpoint telemetry requirements, including client-local GPS opt-in with a default-off hard disable, are specified in the Euryphos-Agent repository. These are requirements only; no listed field or UI page should be considered implemented until source code, persistence, and end-to-end tests demonstrate it.
+
+
+## Inventory history and device detail implementation
+
+Implemented in the server source:
+
+- Accepted inventory uploads are written atomically to both the latest-category table and an append-only snapshot history table.
+- `GET /api/v1/devices/{id}` returns device identity fields and the latest payload for each inventory category; credentials and token hashes are excluded.
+- `GET /api/v1/devices/{id}/inventory/history` returns bounded, cursor-paginated snapshots with optional category filtering.
+- SQLite indexes support device/category timeline reads. Existing databases receive the table through the server's startup migration routine.
+
+Integration assertions now cover latest-value replacement, historical paging, and safe detail responses. They have not yet been executed in a build environment.
