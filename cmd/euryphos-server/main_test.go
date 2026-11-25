@@ -79,12 +79,28 @@ func TestSQLiteServerAgentProtocol(t *testing.T) {
 	performRequest(t, handler, http.MethodPost, "/api/v1/devices/"+enrollment.DeviceID+"/inventory", enrollment.DeviceToken,
 		`{"category":"software","payload":[{"name":"Example","version":"1.2.3"}]}`, http.StatusAccepted)
 
+	performRequest(t, handler, http.MethodPost, "/api/v1/devices/"+enrollment.DeviceID+"/inventory", enrollment.DeviceToken,
+		`{"category":"system","payload":{"cpu":"test-cpu-v2","memory_bytes":16384},"observed_at":"2026-11-24T12:05:00Z"}`, http.StatusAccepted)
+
 	var categories int
 	if err := db.QueryRow(`SELECT count(*) FROM device_inventory WHERE device_id = ?`, enrollment.DeviceID).Scan(&categories); err != nil {
 		t.Fatalf("query received inventory: %v", err)
 	}
 	if categories != 2 {
 		t.Fatalf("expected two inventory categories, received %d", categories)
+	}
+
+	detail := performRequest(t, handler, http.MethodGet, "/api/v1/devices/"+enrollment.DeviceID, "admin-test-token", "", http.StatusOK)
+	if !strings.Contains(string(detail), `"cpu":"test-cpu-v2"`) || strings.Contains(string(detail), "token_hash") {
+		t.Fatalf("device detail did not return latest inventory safely: %s", detail)
+	}
+	history := performRequest(t, handler, http.MethodGet, "/api/v1/devices/"+enrollment.DeviceID+"/inventory/history?category=system&limit=1", "admin-test-token", "", http.StatusOK)
+	if !strings.Contains(string(history), `"has_more":true`) || !strings.Contains(string(history), `"cpu":"test-cpu-v2"`) {
+		t.Fatalf("inventory history pagination failed: %s", history)
+	}
+	pageTwo := performRequest(t, handler, http.MethodGet, "/api/v1/devices/"+enrollment.DeviceID+"/inventory/history?category=system&limit=1&before_id=3", "admin-test-token", "", http.StatusOK)
+	if !strings.Contains(string(pageTwo), `"cpu":"test-cpu"`) {
+		t.Fatalf("inventory history cursor did not return older snapshot: %s", pageTwo)
 	}
 
 	devices := performRequest(t, handler, http.MethodGet, "/api/v1/devices", "admin-test-token", "", http.StatusOK)
