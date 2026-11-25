@@ -665,10 +665,12 @@ func (s *Server) inventory(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusInternalServerError, response{"error":"inventory_current_read_failed"})
 		return
 	}
-	if _, err := tx.ExecContext(r.Context(), `INSERT INTO device_inventory_history(device_id, category, payload, observed_at)
-		VALUES (?, ?, ?, ?)`, r.PathValue("id"), in.Category, string(in.Payload), observedAt); err != nil {
-		write(w, http.StatusInternalServerError, response{"error": "inventory_history_write_failed"})
-		return
+	if !unchangedPayload {
+		if _, err := tx.ExecContext(r.Context(), `INSERT INTO device_inventory_history(device_id, category, payload, observed_at)
+			VALUES (?, ?, ?, ?)`, r.PathValue("id"), in.Category, string(in.Payload), observedAt); err != nil {
+			write(w, http.StatusInternalServerError, response{"error": "inventory_history_write_failed"})
+			return
+		}
 	}
 	if _, err := tx.ExecContext(r.Context(), `INSERT INTO device_inventory(device_id, category, payload, observed_at)
 		VALUES (?, ?, ?, ?)
