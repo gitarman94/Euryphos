@@ -21,9 +21,9 @@
 - Most privileged job executors are not implemented. Patch installation, software deployment/removal, configuration enforcement, service control, reboot/shutdown, and agent self-update remain incomplete.
 - No native macOS client exists yet; it is explicitly in the roadmap.
 - **Web UI:** no browser-based dashboard, Devices list, or per-device details page exists yet. No frontend assets/templates, browser authentication/session flow, or working navigation is present.
-- **Device APIs:** `GET /api/v1/devices` returns only the current summary fields. `GET /api/v1/devices/{id}` and `GET /api/v1/devices/{id}/inventory/history` now provide initial detail and snapshot retrieval. Full field coverage, activity endpoints, advanced fleet filtering, and chart-ready metric aggregation remain incomplete; the Devices list now supports basic server-side search, status/OS filters, sorting, and bounded pagination. the required field catalog is specified in `docs/DEVICE_MANAGEMENT_UI_SPEC.md`.
-- **Endpoint telemetry:** the current agent does not collect most detailed identity, domain/OU, hardware, boot, storage, network, certificate, battery, GPS, or user-session facts. The field and privacy contract is specified in the Euryphos-Agent repository's `docs/TELEMETRY_COLLECTION_SPEC.md`.
-- There is no SSO/MFA/RBAC system, durable push channel, message broker, worker pool, comprehensive audit system, or package repository.
+- **Device APIs:** the Devices list supports search, status/OS/directory/connection filters, allowlisted sorting, and bounded pagination. Device detail returns typed columns plus latest inventory categories; history is change-only, cursor-paginated, and retains observations when a category payload changes. Activity aggregation, category freshness states, fleet metrics, and the browser UI remain incomplete. The full field catalog is in `docs/DEVICE_MANAGEMENT_UI_SPEC.md`.
+- **Endpoint telemetry:** the agent now supplies an initial normalized subset of Linux hardware/CPU/memory/boot/storage/network, distribution identity, and SSSD/realmd directory facts, plus Windows CIM hardware/OS and AD domain/OU facts. Full inventory is still incomplete: certificates, DHCP lease details, all physical disks/volumes, services, security posture, sessions, metrics, and full platform-specific coverage remain outstanding. GPS collection remains disabled/unimplemented. See the agent repository's `docs/TELEMETRY_COLLECTION_SPEC.md`.
+- There is no SSO/MFA/RBAC system, durable push channel, message broker, worker pool, complete compliance-grade audit system (retention, tamper evidence, export controls), or package repository. An initial operational audit table and event coverage are implemented.
 - SQLite is a single-node embedded database with one writer at a time. Fleet-scale throughput, retention, backup/restore, integrity check, and recovery behavior still require measurement and tests.
 - `go.sum` still needs to be populated by `go mod tidy`/`go mod download` in a network-enabled environment. This execution environment cannot resolve `proxy.golang.org`, so the SQLite driver dependency cannot be downloaded and a real driver-backed Go build/test cannot be completed here.
 
@@ -35,16 +35,11 @@
 - Original Windows client PowerShell script: downloads old `windows-client` branch executables/scripts and sets up scheduled tasks; it does not install the current Go service agent and does not verify signed Go release artifacts.
 - There was no Windows server installer in the original archive.
 
-## Validation status for this revision
+## Validation status
 
-- Go source formatting: `gofmt` completed.
-- Historical agent build evidence applied to the extracted endpoint source; the standalone Euryphos-Agent archive is validated separately. Cross-compilation is not OS product certification.
-- Go server source: build and `go vet` passed using a temporary compile-only replacement for the unavailable SQLite driver module. This verifies Go syntax and type usage but does not test SQLite connectivity or SQL through the real Go driver.
-- Server non-database unit tests (`TestUUIDFormat`, `TestCredentialHash`, `TestBearerComparison`): passed against the compile-only replacement.
-- SQLite schema and representative SQL paths: passed using Python's SQLite 3.46.1 runtime, including schema creation, inventory UPSERT, job creation, atomic `UPDATE ... RETURNING` job claim, and completion aggregation. This validates the SQL syntax/logic against SQLite, not `modernc.org/sqlite` integration.
-- Real-driver `go test ./...` is blocked: `modernc.org/sqlite` is not cached and this environment cannot resolve `proxy.golang.org`; `go.sum` must be populated with `go mod tidy` or `go mod download` in a network-enabled Go environment.
-- Docker CLI/daemon was unavailable here, so the container image was not built or run.
-- Linux installer, Windows installer, and macOS client do not exist yet; no OS VM installation tests have been completed.
+- Server CI run [45601625143](https://github.com/gitarman94/Euryphos/actions/runs/45601625143), commit `bf98a199fd38b154d651c87c25a28819d0f17dc5`, passed `go test ./...`, `go vet ./...`, and `go build -trimpath ./cmd/euryphos-server`.
+- Server integration tests cover legacy SQLite schema upgrades, device detail/history, list filters/presence, normalized directory-based grouping, duplicate candidate review/merge, old-agent-token continuity, and authentication audit events. The most recent merge-field and inventory-history refinements still require a fresh CI run.
+- A passing CI build does not certify production deployment, scale, backup/restore, reverse-proxy behavior, or full end-to-end operation with installed endpoints.
 
 ## Separate endpoint-agent repository
 
@@ -105,3 +100,19 @@ The Devices-list API also accepts `connection_state=online`, `offline`, or `neve
 ## Automated validation
 
 GitHub Actions run [45598630499](https://github.com/gitarman94/Euryphos/actions/runs/45598630499), against commit `55aa9307bd9cd2c246b1276a6a5d154ff6be1f6d`, completed successfully on 2026-11-25. `go mod tidy`, `go test ./...`, `go vet ./...`, and `go build -trimpath ./cmd/euryphos-server` all passed.
+
+
+## Normalized device database and management operations
+
+Implemented in the server's existing Go entry point and SQLite migration path:
+
+- One `devices` row per computer. `database_id` is a unique SQLite-generated integer; `id` remains the agent-facing UUID to preserve existing endpoint credentials and API compatibility.
+- Typed scalar columns for hostname/FQDN, OS family/version/distribution/build/architecture, directory type/domain/OU/site, manufacturer/model/serial/SMBIOS UUID/chassis, CPU, memory, BIOS, boot/uptime, root filesystem, timezone, agent version, and network summary.
+- Repeating network interfaces and installed software are stored in indexed child tables, not serialized as a single device column. Current category JSON remains for flexible provider data and is separately indexed by device/category.
+- Inventory history stores category snapshots only when payloads change. An unchanged scheduled network/software scan refreshes freshness without deleting and recreating normalized child rows.
+- Duplicate candidates are detected using SMBIOS UUID or serial + manufacturer + model. No automatic merge occurs. Administrators review candidates and explicitly merge; the source record remains as a merged alias so its current agent token can continue operating against the canonical record.
+- Static groups support explicit membership. Dynamic groups support `all`/`any` matching with `eq`, `ne`, `contains`, `starts_with`, and `ends_with` against allowlisted typed fields. Rules compile to parameterized SQLite predicates; membership changes are materialized in `device_group_memberships`.
+- Directory fields are normalized across platforms: Windows provider reports AD domain and OU where domain services are available; Linux provider reads SSSD/realmd configuration and reports AD/LDAP domain and OU context where exposed.
+- `audit_log` records initial authentication, enrollment, approval/revocation, group mutation, job, and merge events.
+
+Not complete: automatic identity resolution across ambiguous identifiers, manual duplicate review UI, full AD/LDAP discovery/OU resolution across every distro, full RBAC, audit retention/tamper-proofing/export governance, and production load/restore validation.
