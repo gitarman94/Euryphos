@@ -381,8 +381,8 @@ func TestDuplicateDetectionFallsBackToSerialManufacturerModel(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := migrate(ctx, db); err != nil { t.Fatal(err) }
-	_, err = db.Exec("INSERT INTO devices(id,manufacturer,model,serial_number,smbios_uuid) VALUES(?,?,?,?,?)",
-		"serial-canonical", "Acme", "Widget", "ser-123", "")
+	_, err = db.Exec("INSERT INTO devices(id,manufacturer,model,serial_number,smbios_uuid,status) VALUES(?,?,?,?,?,?)",
+		"serial-canonical", "Acme", "Widget", "ser-123", "", "approved")
 	if err != nil { t.Fatal(err) }
 	_, err = db.Exec("INSERT INTO devices(id,manufacturer,model,serial_number,smbios_uuid) VALUES(?,?,?,?,?)",
 		"serial-duplicate", "ACME", "Widget", "SER-123", "")
@@ -411,6 +411,19 @@ func TestDuplicateDetectionFallsBackToSerialManufacturerModel(t *testing.T) {
 		t.Fatalf("serial fallback candidate not found: %v", err)
 	}
 	if matchedOn != "serial_manufacturer_model" { t.Fatalf("unexpected duplicate match reason: %q", matchedOn) }
+	handler := securityHeaders(routes(&Server{db:db,adminToken:"admin-test-token"}))
+	sourceView := performRequest(t,handler,http.MethodGet,"/api/v1/devices/serial-duplicate/duplicates","admin-test-token","",http.StatusOK)
+	if !strings.Contains(string(sourceView), `"merge_source_id":"serial-duplicate"`) ||
+		!strings.Contains(string(sourceView), `"merge_canonical_id":"serial-canonical"`) ||
+		!strings.Contains(string(sourceView), `"merge_allowed":true`) {
+		t.Fatalf("duplicate source view did not expose the safe merge direction: %s",sourceView)
+	}
+	canonicalView := performRequest(t,handler,http.MethodGet,"/api/v1/devices/serial-canonical/duplicates","admin-test-token","",http.StatusOK)
+	if !strings.Contains(string(canonicalView), `"device_id":"serial-duplicate"`) ||
+		!strings.Contains(string(canonicalView), `"merge_source_id":"serial-duplicate"`) ||
+		!strings.Contains(string(canonicalView), `"merge_canonical_id":"serial-canonical"`) {
+		t.Fatalf("canonical-side duplicate view failed: %s",canonicalView)
+	}
 	var placeholderMatches int
 	if err := db.QueryRow("SELECT count(*) FROM device_duplicate_candidates WHERE device_id='placeholder-two'").Scan(&placeholderMatches); err != nil { t.Fatal(err) }
 	if placeholderMatches != 0 { t.Fatalf("OEM placeholder identifiers must not create duplicate candidates, got %d", placeholderMatches) }
