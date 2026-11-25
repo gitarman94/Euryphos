@@ -73,15 +73,16 @@ Tasks:
 
 ### 1.3 Establish the two-repository distribution model
 
-The target end-user model is a central Euryphos server repository and a separately installable endpoint-agent repository. The historical public `CommandPilot-Agent` repository is a migration source, not yet a compatible Euryphos release. The agent implementation has been separated into the `Euryphos-Agent` project; neither repository has yet completed release-level compatibility testing. See `docs/REPOSITORY_LAYOUT.md`.
+The target end-user model is a central Euryphos server repository and a separately installable endpoint-agent repository. The current endpoint repository is `https://github.com/gitarman94/Euryphos-Agent`; it is source-separated and independently buildable, but not yet production-installable or verified end-to-end. The former `CommandPilot-Agent` repository is historical and remains a source, installer, dependency, and license-provenance audit item. See `docs/REPOSITORY_LAYOUT.md`.
 
 Tasks:
 
 - [ ] Audit the full historical standalone agent repository, its source, commit history, dependencies, license notices, and Linux/Windows scripts.
 - [ ] Publish and version the Euryphos API/protocol contract independently of either repository's implementation.
 - [ ] Define one canonical ownership location for Go agent source and remove duplicate maintained implementations after compatibility coverage exists.
-- [ ] Create/rename the standalone repository as `Euryphos-Agent` only after source and protocol migration is ready.
-- [ ] Make the agent repository independently buildable and installable without the server repository or SQLite runtime.
+- [x] Create the separately maintained `Euryphos-Agent` repository and make its Go module independently buildable without server or SQLite dependencies.
+- [ ] Complete the historical agent source/history/license audit and determine which files, if any, retain prior GPL-3.0 grants.
+- [ ] Make the agent production-installable without the server repository or SQLite runtime; this requires tested Linux and Windows installers and versioned releases.
 - [ ] Keep the main repository focused on the server, API, SQLite migrations, server installer/upgrade, and operator console.
 - [ ] Publish client-only Linux and Windows installers that download immutable, versioned, checksum- and signature-verified release artifacts.
 - [ ] Add macOS agent/package/service work in the future macOS phase, without claiming macOS support before signing and runtime tests.
@@ -966,7 +967,7 @@ Create and maintain:
 - [ ] `docs/RUNBOOKS/` — incident and maintenance procedures.
 - [ ] `docs/CHANGELOG.md` — release history.
 - [ ] `CONTRIBUTING.md` — development workflow.
-- [ ] `LICENSE` — selected project license.
+- [x] `LICENSE` — initial Euryphos Personal Use License (EPUL) 1.0 published for material the copyright holder is authorized to license; legal review, file-level provenance, and prior third-party license obligations remain open.
 
 ---
 
