@@ -230,15 +230,14 @@ Keep `Euryphos-Agent/docs/PROJECT_HANDOFF.md` synchronized with actual handler b
 
 ### Server CI
 
-GitHub Actions run **[45630523155](https://github.com/gitarman94/Euryphos/actions/runs/45630523155)** on server commit `33dae28a26b14537ae37181f10fcfa0bb7b06f86` completed successfully on 2026-11-25. It passed:
+The following server CI runs completed successfully on 2026-11-25. Each passed `go mod tidy`, `go test ./...`, `go vet ./...`, `bash -n scripts/install.sh`, and `go build -trimpath ./cmd/euryphos-server`:
 
-- `go mod tidy`
-- `go test ./...`
-- `go vet ./...`
-- `bash -n scripts/install.sh`
-- `go build -trimpath ./cmd/euryphos-server`
+- **[45631229526](https://github.com/gitarman94/Euryphos/actions/runs/45631229526)** — stale-running heartbeat classification and API output on commit `752bb1e08643686d197ab62a3fdd40a1c19027d6`.
+- **[45631313260](https://github.com/gitarman94/Euryphos/actions/runs/45631313260)** — regression test proving overdue is distinct from execution status and does not mutate a running target, commit `9eb2f91de43099c75a6425fee0571f16ad3969ac`.
+- **[45631318715](https://github.com/gitarman94/Euryphos/actions/runs/45631318715)** — console overdue heartbeat display, commit `0a9d32fb40a9ac13cba06214c8bbd441b7febc0a`.
+- **[45631324054](https://github.com/gitarman94/Euryphos/actions/runs/45631324054)** — Debian installer default for `EURYPHOS_JOB_STALE_SECONDS=180`, commit `4caea1f413ca9e88c59030c9d551bd9cd2e689f4`.
 
-This includes the claim/attempt schema and stale-claim protections, idempotent running-job heartbeat timestamp renewal, API tests for `last_updated_at` and target `updated_at`, graceful SIGINT/SIGTERM shutdown, and the Debian installer syntax check. The console activity display is in the subsequent commit/CI run **[45630584721](https://github.com/gitarman94/Euryphos/actions/runs/45630584721)**; check its final result when resuming. Neither run executes the installer inside Debian 13 or runs a live server/agent deployment.
+The earlier API activity timestamp run **[45630523155](https://github.com/gitarman94/Euryphos/actions/runs/45630523155)** also passed, including the job/target activity timestamp assertions. Handoff synchronization run **[45631440620](https://github.com/gitarman94/Euryphos/actions/runs/45631440620)** passed after these changes. These checks do not execute the installer inside Debian 13 or run a live server/agent deployment.
 
 ### Agent CI
 
@@ -324,7 +323,7 @@ The 10-minute receive lease is a narrow first repair, not the final job lifecycl
 - Explicit target lifecycle and timestamps for queued, dispatched/received, running, progress, succeeded, failed, cancelled, expired, and verification-failed states.
 - Attempt number, delivery/lease ID, lease expiry, start/heartbeat/progress, and result idempotency key.
 - Running-job heartbeat is now renewed through the same-claim `started` result; the API and console expose the last server-confirmed target activity time.
-- Stale-running detection, a visible `stalled/indeterminate` state, operator investigation/resolution, and safe policy for any explicit retry. Never automatically requeue a running non-idempotent action solely because its heartbeat is old.
+- Operator notifications and a visible `stalled/indeterminate` presentation for targets whose read-only `heartbeat_state` is `overdue`, plus an administrator resolution/retry workflow. The current calculated flag is not persisted as job state and must not automatically requeue a running non-idempotent action.
 - Recovery after endpoint restart, network loss, server restart, and a job that was received but not reported.
 - Explicit expiry/deadline and cancellation rules.
 - Bounded retry/backoff/jitter, per-action retry classification, dead-letter/manual review.
@@ -511,8 +510,8 @@ When continuing this work after chat history loss:
 
 ### Immediate next task
 
-1. Add server-side stale-running detection and an administrator-visible `stalled/indeterminate` presentation using target activity timestamps. Do not automatically requeue a running operation.
-2. Define explicit operator resolution choices for stale claims, with warnings, audit events, and retry restrictions based on action idempotency. A stale local agent journal returning HTTP 409 must not be silently cleared.
+1. Add an operator notification and explicit `stalled/indeterminate` view for running targets whose heartbeat is `overdue`. Preserve the current read-only semantics: the real status remains `running` and no automatic requeue occurs.
+2. Implement administrator resolution for overdue/stale claims with confirmation, warnings, audit events, and retry restrictions based on action idempotency. A stale local agent journal returning HTTP 409 must not be silently cleared.
 3. Add protocol tests for heartbeat loss, job deadline, agent crash during execution, server restart, stale claim, and resolution/recovery.
 4. Execute real server + agent tests on disposable Linux and Windows VMs: enrollment, full inventory, safe service control, interruption, lost result response, reconnect, and stale-claim behavior.
 5. Complete first server release and Debian 13 Proxmox fresh install, upgrade, failed-upgrade rollback, reboot, backup, and restore qualification.
