@@ -270,8 +270,11 @@ func TestDuplicateMergePreservesAgentCredential(t *testing.T) {
 	_,err=db.Exec("INSERT INTO devices(id,hostname,manufacturer,model,serial_number,smbios_uuid,status,token_hash) VALUES(?,?,?,?,?,?,?,?)",
 		canonical,"workstation-a","Contoso","Model X","SERIAL-77","11111111-2222-3333-4444-555555555555","approved",hash("canonical-token"))
 	if err!=nil { t.Fatal(err) }
-	_,err=db.Exec("INSERT INTO devices(id,hostname,manufacturer,model,serial_number,smbios_uuid,status,token_hash) VALUES(?,?,?,?,?,?,?,?)",
-		source,"workstation-b","Contoso","Model X","SERIAL-77","11111111-2222-3333-4444-555555555555","approved",hash("source-token"))
+	_,err=db.Exec(`INSERT INTO devices(id,hostname,manufacturer,model,serial_number,smbios_uuid,
+		directory_domain,organizational_unit,os_distribution,cpu_model,memory_total_bytes,status,token_hash)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		source,"workstation-b","Contoso","Model X","SERIAL-77","11111111-2222-3333-4444-555555555555",
+		"corp.example","Servers/Finance","windows","Example CPU",17179869184,"approved",hash("source-token"))
 	if err!=nil { t.Fatal(err) }
 	tx,err:=db.BeginTx(ctx,nil)
 	if err!=nil { t.Fatal(err) }
@@ -296,6 +299,15 @@ func TestDuplicateMergePreservesAgentCredential(t *testing.T) {
 		t.Fatal(err)
 	}
 	if status!="merged" || mergedInto!=canonical { t.Fatalf("source alias not retained: status=%q merged_into=%q",status,mergedInto) }
+	var directoryDomain,ou,distribution,cpuModel string
+	var memoryTotal int64
+	if err:=db.QueryRow("SELECT directory_domain,organizational_unit,os_distribution,cpu_model,memory_total_bytes FROM devices WHERE id=?",canonical).
+		Scan(&directoryDomain,&ou,&distribution,&cpuModel,&memoryTotal);err!=nil { t.Fatal(err) }
+	if directoryDomain!="corp.example" || ou!="Servers/Finance" || distribution!="windows" ||
+		cpuModel!="Example CPU" || memoryTotal!=17179869184 {
+		t.Fatalf("merge did not fill canonical typed fields: domain=%q ou=%q distro=%q cpu=%q memory=%d",
+			directoryDomain,ou,distribution,cpuModel,memoryTotal)
+	}
 }
 
 func TestAdminSessionAuditSuccessAndFailure(t *testing.T) {
