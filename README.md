@@ -81,7 +81,6 @@ The GitHub repository is currently private. Run the following as root inside the
 First install or upgrade (the command is the same apart from the final argument):
 
 ```bash
-```bash
 set -e
 apt-get update && apt-get install -y ca-certificates curl
 read -rsp "GitHub read-only token: " GITHUB_TOKEN
@@ -96,7 +95,6 @@ curl -fsSL \
   -o "$INSTALLER"
 bash -n "$INSTALLER"
 GITHUB_TOKEN="$GITHUB_TOKEN" bash "$INSTALLER" install
-```
 ```
 
 For later upgrades, repeat the command and change the final argument from `install` to `upgrade`. The updater resolves the latest published GitHub release. To pin a version, export `EURYPHOS_VERSION=vX.Y.Z` before running it.
