@@ -79,13 +79,29 @@ The server is intended to run as a single instance with its SQLite database on p
 
 The first deployment target is a **Debian 13 Proxmox LXC container** running systemd. The installer supports Linux `amd64` and `arm64`.
 
-For an **initial test installation before the first versioned release**, run this single command as `root` inside the Debian 13 container:
+For an **initial test installation before the first versioned release**, run this as `root` inside the Debian 13 container:
 
 ```bash
-apt-get update && apt-get install -y ca-certificates curl && EURYPHOS_SOURCE_BUILD=1 bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/gitarman94/Euryphos/main/scripts/install.sh | bash -s -- install'
+apt-get update && apt-get install -y ca-certificates curl && f="$(mktemp)" && curl --retry 3 --retry-all-errors -fsSL "https://raw.githubusercontent.com/gitarman94/Euryphos/main/scripts/install.sh" -o "$f" && grep -Fq 'INSTALLER_REVISION="2026-11-25.5"' "$f" && bash -n "$f" && EURYPHOS_SOURCE_BUILD=1 bash "$f" install; result=$?; rm -f "${f:-}"; exit "$result"
 ```
 
-This explicitly builds the current public `main` source inside the CT. It installs the Debian `golang-go` build package, downloads the exact main-branch commit selected by GitHub at install time, builds the server for the CT architecture, and then uses the same service setup, SQLite backup, and health-check path as the release installer. The Go build tools remain installed in the CT. This is a **testing path**, not an immutable release deployment.
+The installer opens a terminal interface with progress sections, resource checks, warnings, a continuation prompt when resources are below the recommended baseline, and the detected CT web addresses after installation. It checks effective CPU availability (including a cgroup CPU quota when exposed), container memory limits (cgroup v2/v1), and total/free space on the filesystem containing `/var/lib/euryphos`. The installer reports when the LXC memory ceiling is not exposed instead of treating host-visible RAM as the container allocation.
+
+This source-build path downloads and pins the exact public `main` commit selected by GitHub at install time, installs Debian's `golang-go`, builds the server for the CT architecture, and uses the same package verification, service setup, SQLite backup, and health-check path as the release installer. The Go build tools remain installed in the CT. This is a **testing path**, not an immutable release deployment.
+
+### Initial server sizing guidance
+
+These are conservative starting recommendations for a small test deployment, not a guaranteed fleet-capacity calculation:
+
+| Resource | Minimum baseline | Recommended starting point |
+| --- | ---: | ---: |
+| CPU | 2 vCPU | 4 vCPU for larger fleets or concurrent work |
+| RAM | 2 GiB for source-build testing | 4 GiB |
+| Disk | 10 GiB total, with 5 GiB free | 20 GiB total, with 10 GiB free |
+
+The installer warns rather than silently changing Proxmox settings. Increase the CT resources in Proxmox and restart the container when appropriate. Actual database capacity depends on enrolled device count, inventory detail, collection frequency, and history retention; these initial figures are not a production sizing guarantee.
+
+After a successful install, the installer prints the available CT IP address and login-page URL. The default configuration has `EURYPHOS_COOKIE_SECURE=true`: the HTTP page can be reached for a connectivity check, but authenticated browser sessions require HTTPS. Put the server behind a trusted HTTPS reverse proxy and use `https://<your-hostname>/login` before normal administrator use. The installer does not configure DNS, TLS, firewall rules, or the reverse proxy.
 
 After the first versioned GitHub release is published, the normal prebuilt-binary install command will be:
 
