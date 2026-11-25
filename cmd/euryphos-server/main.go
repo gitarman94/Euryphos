@@ -3254,6 +3254,17 @@ func (s *Server) resolveJobAlert(w http.ResponseWriter, r *http.Request) {
 	if in.Decision == "retry" {
 		retryAllowed, retryReason := safeJobRetry(action,payload)
 		if !retryAllowed {
+			if err := auditEvent(r.Context(), tx, r, "admin", "configured-admin",
+				"job.target.retry_rejected", "denied", "job_target", jobID+"/"+deviceID,
+				map[string]any{"alert_id":alertID,"claim_id":claimID,"action":action,
+					"reason":retryReason,"administrator_reason":in.Reason}); err != nil {
+				write(w, http.StatusInternalServerError, response{"error":"audit_write_failed"})
+				return
+			}
+			if err := tx.Commit(); err != nil {
+				write(w, http.StatusInternalServerError, response{"error":"job_alert_resolution_failed"})
+				return
+			}
 			write(w, http.StatusConflict, response{"error":"retry_not_safe","reason":retryReason})
 			return
 		}
