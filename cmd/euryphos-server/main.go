@@ -1821,7 +1821,13 @@ func (s *Server) jobResult(w http.ResponseWriter, r *http.Request) {
 	if state == "started" {
 		state = "running"
 	}
-	result, err := s.db.ExecContext(r.Context(), `UPDATE job_targets
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		write(w, http.StatusInternalServerError, response{"error":"database_error"})
+		return
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(r.Context(), `UPDATE job_targets
 		SET status = ?, result = ?, error = ?, updated_at = CURRENT_TIMESTAMP
 		WHERE job_id = ? AND device_id = ?`, state, string(in.Result), in.Error, r.PathValue("job"), r.PathValue("id"))
 	if err != nil {
@@ -1833,7 +1839,7 @@ func (s *Server) jobResult(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusNotFound, response{"error": "job_target_not_found"})
 		return
 	}
-	_, err = s.db.ExecContext(r.Context(), `UPDATE jobs SET status = CASE
+	_, err = tx.ExecContext(r.Context(), `UPDATE jobs SET status = CASE
 		WHEN EXISTS (SELECT 1 FROM job_targets WHERE job_id = ? AND status IN ('queued', 'received', 'running')) THEN
 			CASE WHEN EXISTS (SELECT 1 FROM job_targets WHERE job_id = ? AND status = 'running') THEN 'running' ELSE 'queued' END
 		WHEN EXISTS (SELECT 1 FROM job_targets WHERE job_id = ? AND status IN ('failed', 'cancelled')) THEN 'completed_with_errors'
@@ -1843,8 +1849,12 @@ func (s *Server) jobResult(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusInternalServerError, response{"error": "job_aggregation_failed"})
 		return
 	}
-	if err := auditEvent(r.Context(), s.db, r, "device", r.PathValue("id"), "job.execution.result", in.Status, "job", r.PathValue("job"), map[string]any{"error": in.Error}); err != nil {
+	if err := auditEvent(r.Context(), tx, r, "device", r.PathValue("id"), "job.execution.result", in.Status, "job", r.PathValue("job"), map[string]any{"error": in.Error}); err != nil {
 		write(w, http.StatusInternalServerError, response{"error": "audit_write_failed"})
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		write(w, http.StatusInternalServerError, response{"error":"job_result_commit_failed"})
 		return
 	}
 	write(w, http.StatusOK, response{"status": "recorded"})
