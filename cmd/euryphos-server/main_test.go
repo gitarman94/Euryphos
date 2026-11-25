@@ -197,6 +197,15 @@ func TestSQLiteServerAgentProtocol(t *testing.T) {
 	if categories != 2 {
 		t.Fatalf("expected two inventory categories, received %d", categories)
 	}
+	performRequest(t, handler, http.MethodPost, "/api/v1/devices/"+enrollment.DeviceID+"/inventory", enrollment.DeviceToken,
+		`{"category":"system","payload":{"cpu":"test-cpu-v2","memory_bytes":16384},"observed_at":"2026-11-24T12:10:00Z"}`, http.StatusAccepted)
+	var historyRows int
+	if err := db.QueryRow(`SELECT count(*) FROM device_inventory_history WHERE device_id=? AND category='system'`, enrollment.DeviceID).Scan(&historyRows); err != nil {
+		t.Fatalf("count system history snapshots: %v", err)
+	}
+	if historyRows != 2 {
+		t.Fatalf("unchanged inventory should not add another history snapshot; got %d rows", historyRows)
+	}
 
 	detail := performRequest(t, handler, http.MethodGet, "/api/v1/devices/"+enrollment.DeviceID, "admin-test-token", "", http.StatusOK)
 	if !strings.Contains(string(detail), `"cpu":"test-cpu-v2"`) || strings.Contains(string(detail), "token_hash") {
