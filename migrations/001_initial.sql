@@ -199,6 +199,16 @@ CREATE TABLE IF NOT EXISTS job_targets (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY(job_id, device_id)
 );
+-- Keep the selected group name and ID with the job, independent of later group edits/deletion.
+-- This intentionally has no machine_groups foreign key: job history must remain readable.
+CREATE TABLE IF NOT EXISTS job_group_targets (
+    job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    group_id INTEGER NOT NULL,
+    group_name TEXT NOT NULL,
+    PRIMARY KEY(job_id, group_id)
+);
+CREATE INDEX IF NOT EXISTS idx_job_group_targets_group ON job_group_targets(group_id);
+
 CREATE INDEX IF NOT EXISTS idx_job_targets_device_status ON job_targets(device_id, status);
 CREATE INDEX IF NOT EXISTS idx_jobs_status_created ON jobs(status, created_at);
 
@@ -206,3 +216,4 @@ INSERT OR IGNORE INTO schema_migrations(version) VALUES (1);
 INSERT OR IGNORE INTO schema_migrations(version) VALUES (2);
 INSERT OR IGNORE INTO schema_migrations(version) VALUES (3);
 INSERT OR IGNORE INTO schema_migrations(version) VALUES (4);
+INSERT OR IGNORE INTO schema_migrations(version) VALUES (5);
