@@ -2547,8 +2547,9 @@ func (s *Server) nextJob(w http.ResponseWriter, r *http.Request) {
 	recovered, err := tx.ExecContext(r.Context(), `UPDATE job_targets
 		SET status = 'queued', updated_at = CURRENT_TIMESTAMP
 		WHERE device_id = ? AND status = 'received'
-			AND updated_at < datetime('now', '-10 minutes')
-			AND job_id IN (SELECT id FROM jobs WHERE status IN ('queued', 'running'))`, deviceID)
+			AND updated_at < datetime('now', ?)
+			AND job_id IN (SELECT id FROM jobs WHERE status IN ('queued', 'running'))`,
+		deviceID, fmt.Sprintf("-%d minutes", receiveLeaseMinutes))
 	if err != nil {
 		write(w, http.StatusInternalServerError, response{"error": "job_lease_recovery_failed"})
 		return
