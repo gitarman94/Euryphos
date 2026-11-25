@@ -474,6 +474,12 @@ func TestDynamicGroupUpdateAndGroupTargetedJobs(t *testing.T) {
 	if err := json.Unmarshal(jobRaw, &job); err != nil || job.ID == "" || job.TargetCount != 1 {
 		t.Fatalf("group job did not expand to exactly one approved device: %s (%v)", jobRaw, err)
 	}
+	jobList := performRequest(t, handler, http.MethodGet, "/api/v1/jobs?page=1&page_size=10", "admin-test-token", "", http.StatusOK)
+	if !strings.Contains(string(jobList), job.ID) || !strings.Contains(string(jobList), `"target_count":1`) || !strings.Contains(string(jobList), `"pending":1`) {
+		t.Fatalf("paginated job listing did not expose target state: %s", jobList)
+	}
+	performRequest(t, handler, http.MethodGet, "/api/v1/jobs?page_size=201", "admin-test-token", "", http.StatusBadRequest)
+
 	var targetID string
 	if err := db.QueryRow("SELECT device_id FROM job_targets WHERE job_id=?", job.ID).Scan(&targetID); err != nil || targetID != "windows-1" {
 		t.Fatalf("group job selected wrong target: %q (%v)", targetID, err)
