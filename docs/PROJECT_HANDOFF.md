@@ -186,7 +186,9 @@ The allowlist is not proof that an agent executor exists. Server-side validation
 
 The server atomically marks a queued device target as `received` when the agent polls. The response includes a random per-delivery `claim_id` and a per-target `attempt` counter. A new claim ID is generated every time a queued target is claimed; the attempt counter increments. A **10-minute receive lease** returns an unacknowledged `received` target to `queued`, clears its previous claim ID, records `job.target.requeued`, and permits a new claim. Recovery is indexed by device/status/time. A job already in `running` may still dispatch its other queued device targets.
 
-The agent must include the returned `claim_id` in every result update. The server rejects results from stale claims with HTTP 409, so a delayed result from an expired/reclaimed delivery cannot overwrite the newer attempt. Result processing accepts only an active `received`/`running` target. A repeated terminal result with the same claim and same terminal status is acknowledged as `already_recorded` without duplicating the audit event; a conflicting terminal status is rejected. The `started` transition moves `received` to `running`; a matching terminal result then completes it. Results and claim IDs are covered by server regression tests, and the agent passes the claim ID through its executor to the result request. The agent now persists `pending_job` in its existing config file with phases `received`, `executing`, and `reporting`; it retries persisted result submissions with the same claim and does not replay an unfinished action after restart. An interrupted/unknown action is reported as failed with `agent_interrupted_outcome_unknown`.
+The agent must include the returned `claim_id` in every result update. The server rejects results from stale claims with HTTP 409, so a delayed result from an expired/reclaimed delivery cannot overwrite the newer attempt. Result processing accepts only an active `received`/`running` target. The agent now persists its job locally and sends an idempotent `started` acknowledgement for the active claim **before** running the action; this moves the target from `received` to `running` and removes it from the 10-minute receive-lease reclamation path. A repeated `started` acknowledgement with the same active claim returns `already_recorded` without creating duplicate audit events. A repeated terminal result with the same claim and same terminal status is also acknowledged as `already_recorded`; a conflicting terminal status is rejected. A delayed result from a superseded claim remains rejected with HTTP 409. The agent persists `pending_job` in its existing config file with phases `received`, `starting`, `executing`, and `reporting`; it retries the start acknowledgement/result with the same claim and does not replay an unfinished action after restart. An interrupted/unknown action is reported as failed with `agent_interrupted_outcome_unknown`.
+
+**Remaining limitation:** there is no renewable lease or heartbeat for a `running` job. If the agent is permanently lost or its local configuration is deleted after it starts a job, the server can retain a `running` target indefinitely. Do not requeue a stale running job automatically until the server can distinguish a dead worker from an offline-but-still-executing worker and prevent unsafe duplicate execution.
 
 This is an incremental attempt identity and result-deduplication safeguard, **not** exactly-once execution or a complete retry system. The agent does not yet persist a local execution journal across process restarts. If an endpoint executes a non-idempotent action but loses the result before the server records it, a later attempt may repeat that action. There is no running lease renewal/progress, explicit job expiry, global stale-job sweeper, bounded retry/backoff, or robust cancellation. The 10-minute receive timeout must not be mistaken for a safe timeout for a long-running operation.
 
@@ -222,7 +224,7 @@ Keep `Euryphos-Agent/docs/PROJECT_HANDOFF.md` synchronized with actual handler b
 
 ### Server CI
 
-GitHub Actions run **[45626698821](https://github.com/gitarman94/Euryphos/actions/runs/45626698821)** on server commit `c3212f445259f4998e48085272d7d5e497594f50` completed successfully on 2026-11-25. It passed:
+GitHub Actions run **[45628761473](https://github.com/gitarman94/Euryphos/actions/runs/45628761473)** on server commit `990d7bc412f5d1c832f17548ad2afe10d4762afa` completed successfully on 2026-11-25. It passed:
 
 - `go mod tidy`
 - `go test ./...`
@@ -230,7 +232,7 @@ GitHub Actions run **[45626698821](https://github.com/gitarman94/Euryphos/action
 - `bash -n scripts/install.sh`
 - `go build -trimpath ./cmd/euryphos-server`
 
-This includes additive job-claim schema upgrade to version 13, stale claim rejection, duplicate terminal-result acknowledgment, attempt counter regression coverage, graceful SIGINT/SIGTERM shutdown, SQLite close, Debian installer syntax and the existing SQLite/API regression suite. It does not execute the installer inside Debian 13 or execute the tag-triggered release workflow.
+This includes additive job-claim schema upgrade to version 13, stale claim rejection, duplicate `started` acknowledgement and duplicate terminal-result handling, attempt counter regression coverage, graceful SIGINT/SIGTERM shutdown, SQLite close, Debian installer syntax and the existing SQLite/API regression suite. It does not execute the installer inside Debian 13 or execute the tag-triggered release workflow.
 
 ### Agent CI
 
@@ -501,11 +503,12 @@ When continuing this work after chat history loss:
 
 ### Immediate next task
 
-1. Make the agent send an idempotent `started` acknowledgement before beginning any potentially long-running action. The server should accept a repeat `started` report for the same active claim without duplicate audit noise.
-2. Add a running-lease/heartbeat policy that is separate from the 10-minute receive lease. Long-running patch/software jobs must not be re-dispatched while still executing.
-3. Add a controlled, administrator-visible resolution path for persisted agent jobs whose claim has gone stale. Never silently clear uncertainty or automatically repeat non-idempotent work.
-4. Execute real server + agent tests on disposable Linux and Windows VMs, including enrollment, full inventory, safe service control, interruption, lost result response, reconnect, and stale claim.
-5. Complete server release and Debian 13 Proxmox install/upgrade/rollback qualification. Keep patch operations behind verified job reliability and per-action retry safety.
+1. Design a separate running-job heartbeat/lease and stale-running recovery policy. A `started` job must not be reclaimed by the receive lease; an expired running worker must become visibly stalled/indeterminate rather than being silently re-executed.
+2. Add a controlled administrator-visible resolution path for a locally persisted job whose claim has gone stale. Preserve uncertainty; never silently clear it or automatically repeat non-idempotent work.
+3. Add server/agent tests for start-ack response loss, duplicate start, a long-running action with heartbeats, worker crash, server restart, stale claim, and recovery.
+4. Execute real server + agent tests on disposable Linux and Windows VMs: enrollment, full inventory, safe service control, interruption, lost result response, reconnect, and stale-claim behavior.
+5. Complete first server release and Debian 13 Proxmox fresh install, upgrade, failed-upgrade rollback, reboot, backup, and restore qualification.
+6. Keep patch discovery and installation behind verified running-job recovery and per-action retry safety.
 
 ---
 
