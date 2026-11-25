@@ -1,140 +1,125 @@
+<!--
+Euryphos server repository landing page.
+Detailed engineering state and continuation instructions live in docs/PROJECT_HANDOFF.md.
+-->
+
+<div align="center">
+
 # Euryphos
 
-**Enterprise systems management, fleet visibility, and controlled endpoint operations — built in Go.**
+### See your fleet clearly. Manage it deliberately.
 
-Euryphos is an early-development platform for discovering, inventorying, monitoring, patching, configuring, and operating Windows and Linux computers from one central management plane. Its purpose is to give administrators a trustworthy view of their managed estate and a controlled, auditable way to make changes across individual devices, groups, or the wider fleet.
+Centralized endpoint visibility, inventory, and controlled operations for Linux and Windows environments.
 
-> **Development status: not production-ready.** This repository contains the central Go server and SQLite persistence layer. It is not yet a complete enterprise endpoint-management product. Do not rely on it for production patching or security-critical fleet operations.
+[Server repository](https://github.com/gitarman94/Euryphos) · [Endpoint agent](https://github.com/gitarman94/Euryphos-Agent) · [Project handoff](docs/PROJECT_HANDOFF.md)
 
-## Two separate repositories
+[![Server CI](https://github.com/gitarman94/Euryphos/actions/workflows/go.yml/badge.svg?branch=main)](https://github.com/gitarman94/Euryphos/actions/workflows/go.yml)
 
-| Repository | Responsibility |
-|---|---|
-| **[Euryphos](https://github.com/gitarman94/Euryphos)** (this repository) | Central Go server, HTTP API, SQLite database, migrations, browser console, and server deployment |
-| **[Euryphos-Agent](https://github.com/gitarman94/Euryphos-Agent)** | Separately installed Go endpoint client, inventory providers, endpoint service integration, and client installers as implemented |
+</div>
 
-Install the server once on a central host. Install the agent separately on each managed endpoint. The agent initiates outbound authenticated communication. The endpoint repository does not require the server or SQLite.
+> [!WARNING]
+> **Early development — not production-ready.** Euryphos is being built toward enterprise fleet management, but its endpoint workflows, deployment process, security controls, and supported-platform behavior have not completed production qualification. Do not use it for unattended patching or security-critical fleet operations.
 
-## Current implementation
+---
 
-The server currently provides:
+## One management plane, two small components
 
-- Go standard-library HTTP API and Go-served browser console at `/login` and `/console`.
-- Embedded SQLite using the pure-Go `modernc.org/sqlite` driver; no PostgreSQL service or CGO dependency.
-- Enrollment, device credentials, administrator approval/revocation, heartbeat and categorized inventory ingestion.
-- Typed device fields and normalized network-interface, disk, volume, service and installed-software records.
-- Latest inventory and change-history APIs, bounded device search/filter/sort/pagination, and server-derived online/offline presence.
-- Duplicate candidate review and explicit merge with endpoint-token continuity.
-- Static and dynamic groups, directory-compatible matching, and per-device job targeting with group snapshots.
-- Initial audit events, admin browser sessions and CSRF protection.
-- Initial job queue, device claim/result endpoints, service-control job validation and a minimal expired-receive recovery path.
+Euryphos is designed to give administrators a dependable picture of every enrolled computer and a controlled, auditable way to manage those systems. It is intended to grow beyond patching into inventory, software lifecycle, configuration, and day-to-day endpoint operations.
 
-The matching endpoint agent is still early-stage. It has initial Linux/Windows inventory providers and an initial Linux/systemd and Windows service-control executor. Most patch, software, configuration, reboot/shutdown and self-update executors are not implemented. The agent's latest passing CI after service-control changes is not yet confirmed.
+| Component | Responsibility |
+| --- | --- |
+| **[Euryphos server](https://github.com/gitarman94/Euryphos)** | Central Go service, HTTP API, SQLite database, and browser console |
+| **[Euryphos Agent](https://github.com/gitarman94/Euryphos-Agent)** | Separately installed endpoint service that inventories devices and communicates with the server |
 
-## Architecture decisions
+The server and agent are intentionally kept in separate repositories. The agent initiates authenticated outbound communication; the server does not need to open inbound management ports on every endpoint.
 
-- Go only; no Python or Rust runtime dependencies.
-- SQLite, not PostgreSQL.
-- One server process/database host. SQLite WAL supports concurrent readers but serializes writes; do not run multiple server replicas against the same database file.
-- Keep server and agent in separate repositories.
-- Keep the codebase compact and avoid unnecessary files or unrelated refactors.
-- Device rows use a database-generated integer `database_id` plus a stable agent-facing UUID `id`.
-- Duplicate devices are reviewed and explicitly merged; never auto-merge based only on a guess.
-- GPS remains off by default and locally controlled by the agent. Server policy must not override a local disabled state.
+## What is implemented today
 
-## Development build
+The current foundation includes:
+
+- **Device enrollment and identity** — enrollment tokens, per-device credentials, administrator approval, and revocation.
+- **Fleet inventory** — system, network, storage, service, and installed-software data, with normalized records and inventory history.
+- **Device visibility** — searchable, filterable, paginated device records and server-derived online/offline state.
+- **Duplicate review** — identify possible duplicate computers and explicitly merge records while preserving device identity continuity.
+- **Groups and targeting** — static and rule-based groups, with target snapshots recorded when jobs are created.
+- **Controlled job workflow** — queued work, per-device claims, result reporting, stale-claim protection, and an administrator queue for overdue jobs.
+- **Operational audit trail** — records for important administrative, enrollment, group, job, and alert actions.
+- **Browser console** — initial fleet overview, device details, duplicate review, groups, jobs, and audit views.
+
+The endpoint agent has initial Linux and Windows inventory providers and an initial service-control executor. The server recognizes additional future job types, but an accepted action name is **not** proof that an endpoint executor is implemented.
+
+## What is still being built
+
+The project is not yet a complete endpoint-management suite. Major work remains, including:
+
+- Completing and runtime-testing the server-to-agent workflow on real Linux and Windows systems.
+- Proving safe job execution, interruption handling, recovery, and verification before enabling broader automation.
+- Implementing and validating patch discovery and deployment.
+- Completing software installation/removal and configuration-management workflows.
+- Expanding the dashboard, inventory depth, reporting, and enterprise access controls.
+- Qualifying fresh installation, upgrades, rollback, reboot recovery, and database restore on Debian 13 Proxmox.
+- Security review, scale testing, and platform-specific support certification.
+
+See the [Project Context and Continuation Handoff](docs/PROJECT_HANDOFF.md) for the verified implementation state, owner decisions, architecture, test evidence, and prioritized work remaining.
+
+## Architecture
+
+Euryphos is deliberately straightforward:
+
+- **Go** for the server and endpoint agent.
+- **SQLite** embedded in the server process; no separate database service.
+- **Native systemd service** for the server deployment.
+- **Separate server and agent repositories.**
+- **Typed, auditable operations** rather than an unrestricted remote-shell design.
+- **Bounded inventory, queries, and job processing** to keep fleet growth manageable.
+
+The server is intended to run as a single instance with its SQLite database on persistent local storage. SQLite WAL improves reader concurrency, but it does not make a shared database file suitable for multiple active server replicas.
+
+## Install the server
+
+The first deployment target is a **Debian 13 Proxmox LXC container** running systemd. The installer supports Linux `amd64` and `arm64`.
+
+Once the first versioned GitHub release has been published, run this single command as `root` inside the container:
+
+```bash
+apt-get update && apt-get install -y ca-certificates curl && bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/gitarman94/Euryphos/main/scripts/install.sh | bash -s -- install'
+```
+
+The installer downloads the matching release archive, verifies its SHA-256 checksum, creates the unprivileged service account, installs the systemd unit, and creates the initial configuration and secrets. The default service listener is port `8080`; place it behind a trusted HTTPS reverse proxy before exposing it to untrusted networks.
+
+**Release availability:** the installer script is in the repository, but a first versioned release has not yet been published. The command above will not complete until a release containing the server archives and `SHA256SUMS` is available. Fresh-install, upgrade, rollback, reboot, and restore testing in a Debian 13 Proxmox CT is also still required.
+
+After installation, the service is managed with:
+
+```bash
+systemctl status euryphos
+journalctl -u euryphos -f
+```
+
+The initial administrator and enrollment tokens are stored in the root-readable configuration file at `/etc/euryphos/euryphos.env`.
+
+## Build from source
 
 Requirements: Go 1.23 or later.
 
 ```bash
 git clone https://github.com/gitarman94/Euryphos.git
 cd Euryphos
-go mod download
 go test ./...
 go vet ./...
+go build ./cmd/euryphos-server
 ```
 
-Start a local development server with independent high-entropy secrets:
-
-```bash
-export EURYPHOS_ADMIN_TOKEN="$(openssl rand -hex 32)"
-export EURYPHOS_ENROLLMENT_TOKEN="$(openssl rand -hex 32)"
-export EURYPHOS_DB_PATH="./data/euryphos.db"
-export EURYPHOS_LISTEN=":8080"
-go run ./cmd/euryphos-server
-```
-
-Check health:
-
-```bash
-curl --fail http://127.0.0.1:8080/api/health
-```
-
-This is a development procedure, not a production install. Do not expose an unencrypted development listener to untrusted networks.
-
-## Debian 13 Proxmox CT installation and upgrade
-
-The server runs directly as a Go binary under **systemd inside a Debian 13 Proxmox LXC container**. It does not require Docker, Docker Compose, PostgreSQL, or a separate database service. SQLite lives on the CT's persistent filesystem at `/var/lib/euryphos/euryphos.db`.
-
-The GitHub repository is currently private. Run the following as root inside the CT. Use a fine-grained GitHub token with **Contents: read** for this repository; the token is requested without echo and is not written to the Euryphos configuration.
-
-First install or upgrade (the command is the same apart from the final argument):
-
-```bash
-set -e
-apt-get update && apt-get install -y ca-certificates curl
-read -rsp "GitHub read-only token: " GITHUB_TOKEN
-printf '\n'
-export GITHUB_TOKEN
-INSTALLER="$(mktemp)"
-trap 'rm -f "$INSTALLER"; unset GITHUB_TOKEN' EXIT
-curl -fsSL \
-  -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-  -H "Accept: application/vnd.github.raw+json" \
-  "https://api.github.com/repos/gitarman94/Euryphos/contents/scripts/install.sh?ref=main" \
-  -o "$INSTALLER"
-bash -n "$INSTALLER"
-GITHUB_TOKEN="$GITHUB_TOKEN" bash "$INSTALLER" install
-```
-
-For later upgrades, repeat the command and change the final argument from `install` to `upgrade`. The updater resolves the latest published GitHub release. To pin a version, export `EURYPHOS_VERSION=vX.Y.Z` before running it.
-
-A `v*` Git tag triggers the release workflow. It tests the tagged Go source and publishes Linux amd64 and arm64 archives plus `SHA256SUMS`. The installer checks the archive checksum before installing it. A published release is required; the installer stops without replacing the running application when no matching release or valid asset is available.
-
-The installer:
-- Requires Debian 13, root, and a running systemd manager.
-- Creates the unprivileged `euryphos` service account and installs the systemd unit.
-- Installs the binary under a versioned directory in `/opt/euryphos/releases/` and switches `/opt/euryphos/current` atomically.
-- Creates `/etc/euryphos/euryphos.env` on first install with generated administrator/enrollment secrets. Later upgrades preserve the file unchanged.
-- Keeps the SQLite database under `/var/lib/euryphos/`; upgrades never delete, reset, or replace that live database.
-- Stops the service before making a SQLite backup with the SQLite backup API, verifies the backup with `PRAGMA integrity_check`, then starts the new version.
-- Checks `/api/health`. If the new version fails to start or pass the local health check, it switches back to the previous binary and restores the pre-upgrade database backup.
-- Retains backups in `/var/lib/euryphos/backups/` for manual recovery.
-
-Useful commands:
-
-```bash
-systemctl status euryphos
-journalctl -u euryphos -f
-grep '^EURYPHOS_ADMIN_TOKEN=' /etc/euryphos/euryphos.env
-```
-
-The default listener is `:8080`. Put it behind a trusted HTTPS reverse proxy before exposing it to untrusted networks. `EURYPHOS_COOKIE_SECURE=true` is the installed default; do not disable it for an internet-facing service.
-
-**Deployment qualification is still required:** the installer and release workflow are implemented, but a fresh install, in-place upgrade, forced failed-upgrade rollback, reboot, and database restore must still be exercised in a disposable Debian 13 Proxmox CT. SHA-256 verifies transfer integrity against the GitHub release manifest; cryptographic release signing and provenance verification remain release-gate work.
+For local development, set independent high-entropy values for `EURYPHOS_ADMIN_TOKEN` and `EURYPHOS_ENROLLMENT_TOKEN`, choose a persistent `EURYPHOS_DB_PATH`, then run `go run ./cmd/euryphos-server`. The default development listener is `:8080`.
 
 ## Platform direction
 
-Planned endpoint targets include Arch Linux and CachyOS; Debian, Ubuntu, Linux Mint and LMDE; Fedora and Nobara; Bazzite/Atomic using image-aware workflows; and Windows. A native macOS agent is a later phase. None is currently certified for production use. A successful cross-build is not platform certification.
+The intended endpoint support matrix covers Arch-family distributions (including CachyOS), Debian-family distributions (including Debian, Ubuntu, Mint, and LMDE), Fedora-family distributions (including Fedora and Nobara), Bazzite/Atomic systems using image-aware workflows, and Windows. A native macOS agent is planned for a later phase. These are project targets, not a statement that every distribution is currently certified.
 
-## Project continuation
+## Project status and contribution context
 
-The detailed project context, owner decisions, current implementation, test evidence, platform requirements, and prioritized work remaining are kept in one document:
+This repository is the **server only**. For current engineering instructions, source map, API behavior, constraints, and next tasks, read the single detailed [Project Context and Continuation Handoff](docs/PROJECT_HANDOFF.md). Keep that file synchronized with meaningful implementation changes; avoid creating duplicate roadmap and status documents.
 
-**[Project Context and Continuation Handoff](docs/PROJECT_HANDOFF.md)**
+## License
 
-Read that handoff before continuing development after losing chat history. It is the single detailed engineering plan; do not recreate multiple overlapping status, roadmap, architecture, support, API, or installer documents.
-
-## Licensing
-
-Euryphos is source-available under the custom **Euryphos Personal Use License (EPUL) 1.0**. It is not an OSI-approved open-source license. Free personal-use rights apply only to material the applicable rights holder can license. Corporate use requires a separate written commercial license for that material. Previously granted GPL-3.0 and third-party rights remain in force. Read [LICENSE](LICENSE) and the licensing/source-provenance section of the project handoff before use.
+Euryphos is distributed under the **Euryphos Personal Use License (EPUL) 1.0**. It is not an OSI-approved open-source license. Personal-use permissions and separate commercial-use requirements are described in [LICENSE](LICENSE). Previously granted GPL-3.0 and third-party rights remain in force; review the license and source-provenance terms before reusing or redistributing code.
