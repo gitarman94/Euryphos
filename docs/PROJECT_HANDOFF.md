@@ -186,7 +186,7 @@ The allowlist is not proof that an agent executor exists. Server-side validation
 
 The server atomically marks a queued device target as `received` when the agent polls. The response includes a random per-delivery `claim_id` and a per-target `attempt` counter. A new claim ID is generated every time a queued target is claimed; the attempt counter increments. A **10-minute receive lease** returns an unacknowledged `received` target to `queued`, clears its previous claim ID, records `job.target.requeued`, and permits a new claim. Recovery is indexed by device/status/time. A job already in `running` may still dispatch its other queued device targets.
 
-The agent must include the returned `claim_id` in every result update. The server rejects results from stale claims with HTTP 409, so a delayed result from an expired/reclaimed delivery cannot overwrite the newer attempt. Result processing accepts only an active `received`/`running` target. A repeated terminal result with the same claim and same terminal status is acknowledged as `already_recorded` without duplicating the audit event; a conflicting terminal status is rejected. The `started` transition moves `received` to `running`; a matching terminal result then completes it. Results and claim IDs are covered by server regression tests, and the agent passes the claim ID through its executor to the result request.
+The agent must include the returned `claim_id` in every result update. The server rejects results from stale claims with HTTP 409, so a delayed result from an expired/reclaimed delivery cannot overwrite the newer attempt. Result processing accepts only an active `received`/`running` target. A repeated terminal result with the same claim and same terminal status is acknowledged as `already_recorded` without duplicating the audit event; a conflicting terminal status is rejected. The `started` transition moves `received` to `running`; a matching terminal result then completes it. Results and claim IDs are covered by server regression tests, and the agent passes the claim ID through its executor to the result request. The agent now persists `pending_job` in its existing config file with phases `received`, `executing`, and `reporting`; it retries persisted result submissions with the same claim and does not replay an unfinished action after restart. An interrupted/unknown action is reported as failed with `agent_interrupted_outcome_unknown`.
 
 This is an incremental attempt identity and result-deduplication safeguard, **not** exactly-once execution or a complete retry system. The agent does not yet persist a local execution journal across process restarts. If an endpoint executes a non-idempotent action but loses the result before the server records it, a later attempt may repeat that action. There is no running lease renewal/progress, explicit job expiry, global stale-job sweeper, bounded retry/backoff, or robust cancellation. The 10-minute receive timeout must not be mistaken for a safe timeout for a long-running operation.
 
@@ -501,12 +501,11 @@ When continuing this work after chat history loss:
 
 ### Immediate next task
 
-1. Add a durable agent-side in-flight job journal. Persist the job ID, claim ID, action, payload, attempt, and execution phase before executing any action; recover conservatively after process restart and never silently rerun an action whose outcome is unknown.
-2. Define how an interrupted/unknown action is reported without allowing the server to dispatch it again automatically. Preserve the at-least-once contract and require an explicit retry policy for non-idempotent operations.
-3. Add server/agent protocol tests for interruption before execution, interruption during execution, lost result response, duplicate result, stale claim, and reconnect/restart.
-4. Run a real server + agent end-to-end test on a disposable Linux VM and Windows VM. No actual installed-binary or live service-control test has been completed yet.
-5. Publish the first server release and qualify Debian 13 Proxmox fresh install, in-place upgrade, failed-upgrade rollback, reboot, backup, and restore before production deployment.
-6. Keep patch discovery and installation behind reliable job acknowledgement, persisted execution state, explicit retry policy, and action auditing.
+1. Make the agent send an idempotent `started` acknowledgement before beginning any potentially long-running action. The server should accept a repeat `started` report for the same active claim without duplicate audit noise.
+2. Add a running-lease/heartbeat policy that is separate from the 10-minute receive lease. Long-running patch/software jobs must not be re-dispatched while still executing.
+3. Add a controlled, administrator-visible resolution path for persisted agent jobs whose claim has gone stale. Never silently clear uncertainty or automatically repeat non-idempotent work.
+4. Execute real server + agent tests on disposable Linux and Windows VMs, including enrollment, full inventory, safe service control, interruption, lost result response, reconnect, and stale claim.
+5. Complete server release and Debian 13 Proxmox install/upgrade/rollback qualification. Keep patch operations behind verified job reliability and per-action retry safety.
 
 ---
 
