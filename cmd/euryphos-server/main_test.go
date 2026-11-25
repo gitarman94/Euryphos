@@ -353,6 +353,40 @@ func TestDuplicateMergePreservesAgentCredential(t *testing.T) {
 	}
 }
 
+func TestDuplicateDetectionFallsBackToSerialManufacturerModel(t *testing.T) {
+	db, err := openDatabase(filepath.Join(t.TempDir(), "serial-duplicates.db"))
+	if err != nil { t.Fatal(err) }
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := migrate(ctx, db); err != nil { t.Fatal(err) }
+	_, err = db.Exec("INSERT INTO devices(id,manufacturer,model,serial_number,smbios_uuid) VALUES(?,?,?,?,?)",
+		"serial-canonical", "Acme", "Widget", "SER-123", "")
+	if err != nil { t.Fatal(err) }
+	_, err = db.Exec("INSERT INTO devices(id,manufacturer,model,serial_number,smbios_uuid) VALUES(?,?,?,?,?)",
+		"serial-duplicate", "ACME", "Widget", "ser-123", "")
+	if err != nil { t.Fatal(err) }
+	_, err = db.Exec("INSERT INTO devices(id,manufacturer,model,serial_number,smbios_uuid) VALUES(?,?,?,?,?)",
+		"placeholder-one", "OEM", "Default String", "To be filled by O.E.M.", "00000000-0000-0000-0000-000000000000")
+	if err != nil { t.Fatal(err) }
+	_, err = db.Exec("INSERT INTO devices(id,manufacturer,model,serial_number,smbios_uuid) VALUES(?,?,?,?,?)",
+		"placeholder-two", "OEM", "Default String", "to be filled by o.e.m.", "00000000-0000-0000-0000-000000000000")
+	if err != nil { t.Fatal(err) }
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil { t.Fatal(err) }
+	server := &Server{db: db}
+	if err := server.recordDuplicateCandidates(ctx, tx, "serial-duplicate"); err != nil { tx.Rollback(); t.Fatal(err) }
+	if err := server.recordDuplicateCandidates(ctx, tx, "placeholder-two"); err != nil { tx.Rollback(); t.Fatal(err) }
+	if err := tx.Commit(); err != nil { t.Fatal(err) }
+	var matchedOn string
+	if err := db.QueryRow("SELECT matched_on FROM device_duplicate_candidates WHERE device_id='serial-duplicate' AND candidate_device_id='serial-canonical'").Scan(&matchedOn); err != nil {
+		t.Fatalf("serial fallback candidate not found: %v", err)
+	}
+	if matchedOn != "serial_manufacturer_model" { t.Fatalf("unexpected duplicate match reason: %q", matchedOn) }
+	var placeholderMatches int
+	if err := db.QueryRow("SELECT count(*) FROM device_duplicate_candidates WHERE device_id='placeholder-two'").Scan(&placeholderMatches); err != nil { t.Fatal(err) }
+	if placeholderMatches != 0 { t.Fatalf("OEM placeholder identifiers must not create duplicate candidates, got %d", placeholderMatches) }
+}
 func TestAdminSessionAuditSuccessAndFailure(t *testing.T) {
 	db,err:=openDatabase(filepath.Join(t.TempDir(),"audit.db"))
 	if err!=nil { t.Fatal(err) }
@@ -362,11 +396,12 @@ func TestAdminSessionAuditSuccessAndFailure(t *testing.T) {
 	if err:=migrate(ctx,db);err!=nil { t.Fatal(err) }
 	handler:=securityHeaders(routes(&Server{db:db,adminToken:"admin-test-token"}))
 	performRequest(t,handler,http.MethodPost,"/api/v1/auth/session","bad-token","{}",http.StatusUnauthorized)
+	performRequest(t,handler,http.MethodGet,"/api/v1/groups","bad-token","",http.StatusUnauthorized)
 	performRequest(t,handler,http.MethodPost,"/api/v1/auth/session","admin-test-token","{}",http.StatusOK)
 	var failures,successes int
 	if err:=db.QueryRow("SELECT count(*) FROM audit_log WHERE event_type='auth.admin.failure'").Scan(&failures);err!=nil { t.Fatal(err) }
 	if err:=db.QueryRow("SELECT count(*) FROM audit_log WHERE event_type='auth.admin.success'").Scan(&successes);err!=nil { t.Fatal(err) }
-	if failures!=1 || successes!=1 { t.Fatalf("unexpected auth audit rows: failures=%d successes=%d",failures,successes) }
+	if failures!=2 || successes!=1 { t.Fatalf("unexpected auth audit rows: failures=%d successes=%d",failures,successes) }
 }
 
 func performRequest(t *testing.T, handler http.Handler, method, path, token, body string, expectedStatus int) []byte {
