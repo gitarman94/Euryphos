@@ -525,14 +525,14 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 		if s.onlineGrace <= 0 {
 			cutoff = time.Now().UTC().Add(-90 * time.Second)
 		}
-		where = append(where, "last_seen IS NOT NULL AND last_seen >= ? AND last_seen <= ?")
+		where = append(where, "last_seen IS NOT NULL AND julianday(last_seen) >= julianday(?) AND julianday(last_seen) <= julianday(?)")
 		args = append(args, cutoff.Format(time.RFC3339Nano), futureLimit.Format(time.RFC3339Nano))
 	case "offline":
 		grace := s.onlineGrace
 		if grace <= 0 {
 			grace = 90 * time.Second
 		}
-		where = append(where, "last_seen IS NOT NULL AND last_seen < ?")
+		where = append(where, "last_seen IS NOT NULL AND julianday(last_seen) < julianday(?)")
 		args = append(args, time.Now().UTC().Add(-grace).Format(time.RFC3339Nano))
 	case "never_connected":
 		where = append(where, "(last_seen IS NULL OR last_seen = '')")
