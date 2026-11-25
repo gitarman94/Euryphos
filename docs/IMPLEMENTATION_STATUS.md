@@ -20,7 +20,10 @@
 - The agent has basic host and installed-software inventory, but distribution identification, Arch/pacman collection, Debian/apt nuances, Fedora/dnf support, and Bazzite/image-aware update management remain incomplete.
 - Most privileged job executors are not implemented. Patch installation, software deployment/removal, configuration enforcement, service control, reboot/shutdown, and agent self-update remain incomplete.
 - No native macOS client exists yet; it is explicitly in the roadmap.
-- There is no finished operator dashboard, SSO/MFA/RBAC system, durable push channel, message broker, worker pool, comprehensive audit system, or package repository.
+- **Web UI:** no browser-based dashboard, Devices list, or per-device details page exists yet. No frontend assets/templates, browser authentication/session flow, or working navigation is present.
+- **Device APIs:** `GET /api/v1/devices` returns only the current summary fields. `GET /api/v1/devices/{id}`, inventory detail/history, and activity endpoints are not implemented; the required field catalog is specified in `docs/DEVICE_MANAGEMENT_UI_SPEC.md`.
+- **Endpoint telemetry:** the current agent does not collect most detailed identity, domain/OU, hardware, boot, storage, network, certificate, battery, GPS, or user-session facts. The field and privacy contract is specified in the Euryphos-Agent repository's `docs/TELEMETRY_COLLECTION_SPEC.md`.
+- There is no SSO/MFA/RBAC system, durable push channel, message broker, worker pool, comprehensive audit system, or package repository.
 - SQLite is a single-node embedded database with one writer at a time. Fleet-scale throughput, retention, backup/restore, integrity check, and recovery behavior still require measurement and tests.
 - `go.sum` still needs to be populated by `go mod tidy`/`go mod download` in a network-enabled environment. This execution environment cannot resolve `proxy.golang.org`, so the SQLite driver dependency cannot be downloaded and a real driver-backed Go build/test cannot be completed here.
 
