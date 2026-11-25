@@ -54,21 +54,26 @@ This repository currently includes:
 - Endpoint enrollment using a shared enrollment secret and per-device bearer credentials.
 - Administrator approval and revocation endpoints.
 - Device authentication, heartbeat, and categorized inventory ingestion.
-- Administrator device listing, job creation, and job status retrieval.
+- Administrator device listing with bounded search/filter/sort/pagination, typed device detail, inventory history, job creation, and job status retrieval.
+- A SQLite `devices` row per computer with a database-generated integer `database_id` plus the stable agent-facing UUID `id`; frequently queried identity, OS, directory, hardware, CPU, memory, storage, network summary, and agent fields are stored in typed columns.
+- Normalized child rows for network interfaces and installed software; current category payloads plus change-only inventory history.
+- Strong duplicate candidate detection (SMBIOS UUID, or serial + manufacturer + model), reviewable candidates, explicit merge, and continued authentication using the merged endpoint's existing token.
+- Initial `audit_log` events for authentication outcomes, enrollment/approval/revocation, group changes, job actions/results, and duplicate merges.
+- Static and rule-based dynamic machine groups using normalized Windows AD and Linux directory attributes.
 - Agent job polling and result reporting endpoints.
 - Docker Compose deployment with a persistent SQLite volume.
 
 ### Not implemented or not production-ready
 
 - **No browser web UI is implemented yet:** dashboard, Devices-list, and device-detail pages, frontend templates/assets, and browser login/session workflow remain outstanding.
-- Initial administrator APIs now provide `GET /api/v1/devices/{id}` for current device identity/latest inventory and `GET /api/v1/devices/{id}/inventory/history` for bounded, cursor-paginated inventory snapshots. The Devices-list API also supports basic search, status/OS filters, allowlisted sorting, and bounded pagination. Connection presence is derived server-side from the most recent authenticated heartbeat, with a 90-second default online grace period configurable through `EURYPHOS_ONLINE_GRACE_SECONDS` (allowed range 15–3600 seconds). First/last connection timestamps are returned separately from enrollment status, and the Devices list can filter by `connection_state=online|offline|never_connected`. Full field coverage, activity types, fleet-wide trend aggregation, and the browser UI remain incomplete.
-- Full hardware, service, security, and configuration inventory providers.
+- Initial administrator APIs now provide `GET /api/v1/devices/{id}` for current device identity/latest inventory and `GET /api/v1/devices/{id}/inventory/history` for bounded, cursor-paginated inventory snapshots. The Devices-list API also supports basic search across hostname/FQDN/OS/directory fields, status/OS/directory filters, allowlisted sorting, and bounded pagination. Connection presence is derived server-side from the most recent authenticated heartbeat, with a 90-second default online grace period configurable through `EURYPHOS_ONLINE_GRACE_SECONDS` (allowed range 15–3600 seconds). First/last connection timestamps are returned separately from enrollment status, and the Devices list can filter by `connection_state=online|offline|never_connected`. Full field coverage, activity types, fleet-wide trend aggregation, and the browser UI remain incomplete.
+- Full hardware, service, security, and configuration inventory providers; current normalized columns represent the initial subset and are not the complete telemetry specification.
 - Functional patch installation, software deployment/removal, configuration enforcement, and most privileged job executors.
 - Production server installers, signed release artifacts, and tested upgrade/backup/restore procedures.
 - A tested one-command Debian 13 / Proxmox LXC deployment.
 - Certified support for any Linux distribution or Windows release; see the [support matrix](docs/SUPPORT_MATRIX.md).
 - End-to-end verification of this server against the separately distributed Euryphos-Agent binary.
-- Enterprise SSO/MFA/RBAC, multi-tenancy, comprehensive audit controls, and production-hardened agent communications.
+- Enterprise SSO/MFA/RBAC, multi-tenancy, audit retention/tamper controls and complete audit coverage, and production-hardened agent communications. The current audit log is an initial operational record, not a full compliance-grade audit system.
 - Fleet-scale throughput testing, data retention, backup/restore drills, and disaster recovery guarantees.
 
 A route or placeholder is not evidence that an end-user capability is complete. Review [implementation status](docs/IMPLEMENTATION_STATUS.md) and the [completion plan](docs/COMPLETION_PLAN.md).
@@ -191,3 +196,14 @@ The API is an early implementation contract and may change before a stable relea
 Euryphos is source-available under the **Euryphos Personal Use License (EPUL) 1.0**. Individuals may use and modify it free of charge for their own personal devices, home lab, hobby, and self-directed learning. Use by or on behalf of a company, corporation, or other business—including managing its devices or infrastructure—requires a separate written commercial license. Other institutional situations are addressed in [`LICENSE`](LICENSE).
 
 This is **not an OSI-approved open-source license**. Read [`LICENSE`](LICENSE) and [`COMMERCIAL-LICENSING.md`](COMMERCIAL-LICENSING.md) before use. Third-party components and previously granted rights remain subject to their applicable licenses; this license does not withdraw rights already granted under another license.
+
+
+## SQLite device records, groups, duplicates, and audit
+
+The server keeps one row per computer in `devices`. Its integer `database_id` is generated from SQLite's rowid and is unique within the database; the text `id` remains the stable UUID used by the separately installed agent and existing API routes. Scalar facts that are commonly filtered or displayed are typed columns. Repeating facts are stored as child rows: `device_network_interfaces` and `installed_software`. The JSON category store remains for extensible provider payloads; it is not the authoritative source for the typed columns used by the fleet directory.
+
+Duplicate detection records candidates rather than merging automatically. A matching SMBIOS UUID is the strongest signal; the fallback is serial number + manufacturer + model. An administrator reviews candidates and explicitly selects a canonical computer. The merge moves history, normalized interface/software data, memberships, and jobs; missing canonical scalar fields are filled from the source. The source record remains as a merged alias and its existing agent credential redirects authenticated requests to the canonical record.
+
+Groups can be static or dynamic. Dynamic groups use a bounded, allowlisted rule set over normalized fields such as OS family/distribution, directory type/domain/OU/site, manufacturer/model, and agent version. Rules are evaluated in SQLite with bound parameters. Windows AD and Linux SSSD/realmd directory facts share the same fields.
+
+The initial `audit_log` stores authentication outcomes, enrollment and approval/revocation, group changes, job creation/results, and duplicate merges. It is not yet a substitute for user accounts, RBAC, immutable/tamper-evident retention, or a compliance audit pipeline.
