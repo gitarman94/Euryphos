@@ -493,6 +493,93 @@ func TestDynamicGroupUpdateAndGroupTargetedJobs(t *testing.T) {
 	}
 }
 
+func TestBrowserSessionRequiresCSRFAndSupportsConsole(t *testing.T) {
+	db, err := openDatabase(filepath.Join(t.TempDir(), "browser-session.db"))
+	if err != nil { t.Fatal(err) }
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := migrate(ctx, db); err != nil { t.Fatal(err) }
+	server := &Server{db:db,adminToken:"admin-test-token",cookieSecure:false}
+	handler := securityHeaders(routes(server))
+
+	loginPage := httptest.NewRecorder()
+	handler.ServeHTTP(loginPage, httptest.NewRequest(http.MethodGet, "/login", nil))
+	if loginPage.Code != http.StatusOK || !strings.Contains(loginPage.Body.String(), "Sign in to Euryphos") {
+		t.Fatalf("login page did not render: status=%d", loginPage.Code)
+	}
+
+	loginRequest := httptest.NewRequest(http.MethodPost, "/api/v1/auth/session", strings.NewReader("{}"))
+	loginRequest.Header.Set("Authorization", "Bearer admin-test-token")
+	loginRequest.Header.Set("Content-Type", "application/json")
+	loginResponse := httptest.NewRecorder()
+	handler.ServeHTTP(loginResponse, loginRequest)
+	if loginResponse.Code != http.StatusOK { t.Fatalf("login failed: %d %s",loginResponse.Code,loginResponse.Body.String()) }
+	var sessionCookie, csrfCookie *http.Cookie
+	for _, cookie := range loginResponse.Result().Cookies() {
+		switch cookie.Name {
+		case "euryphos_admin_session": sessionCookie = cookie
+		case "euryphos_csrf": csrfCookie = cookie
+		}
+	}
+	if sessionCookie == nil || csrfCookie == nil || !sessionCookie.HttpOnly ||
+		sessionCookie.SameSite != http.SameSiteStrictMode || csrfCookie.HttpOnly {
+		t.Fatalf("session cookies missing or insecure: session=%#v csrf=%#v",sessionCookie,csrfCookie)
+	}
+
+	consoleRequest := httptest.NewRequest(http.MethodGet, "/console", nil)
+	consoleRequest.AddCookie(sessionCookie)
+	consoleResponse := httptest.NewRecorder()
+	handler.ServeHTTP(consoleResponse, consoleRequest)
+	if consoleResponse.Code != http.StatusOK || !strings.Contains(consoleResponse.Body.String(), "Euryphos Console") {
+		t.Fatalf("authenticated browser console failed: status=%d body=%s",consoleResponse.Code,consoleResponse.Body.String())
+	}
+
+	readRequest := httptest.NewRequest(http.MethodGet, "/api/v1/groups", nil)
+	readRequest.AddCookie(sessionCookie)
+	readResponse := httptest.NewRecorder()
+	handler.ServeHTTP(readResponse, readRequest)
+	if readResponse.Code != http.StatusOK {
+		t.Fatalf("session cookie did not authorize safe API request: %d %s",readResponse.Code,readResponse.Body.String())
+	}
+
+	unsafeWithoutCSRF := httptest.NewRequest(http.MethodPost, "/api/v1/groups", strings.NewReader(`{"name":"No CSRF","group_type":"static"}`))
+	unsafeWithoutCSRF.AddCookie(sessionCookie)
+	unsafeWithoutCSRF.Header.Set("Content-Type","application/json")
+	unsafeResponse := httptest.NewRecorder()
+	handler.ServeHTTP(unsafeResponse,unsafeWithoutCSRF)
+	if unsafeResponse.Code != http.StatusForbidden {
+		t.Fatalf("session mutation without CSRF token returned %d, expected 403: %s",unsafeResponse.Code,unsafeResponse.Body.String())
+	}
+
+	createRequest := httptest.NewRequest(http.MethodPost, "/api/v1/groups", strings.NewReader(`{"name":"Browser Group","group_type":"static"}`))
+	createRequest.AddCookie(sessionCookie)
+	createRequest.AddCookie(csrfCookie)
+	createRequest.Header.Set("X-Euryphos-CSRF",csrfCookie.Value)
+	createRequest.Header.Set("Content-Type","application/json")
+	createResponse := httptest.NewRecorder()
+	handler.ServeHTTP(createResponse,createRequest)
+	if createResponse.Code != http.StatusCreated {
+		t.Fatalf("valid CSRF protected mutation failed: %d %s",createResponse.Code,createResponse.Body.String())
+	}
+
+	logoutRequest := httptest.NewRequest(http.MethodPost, "/api/v1/auth/logout", strings.NewReader("{}"))
+	logoutRequest.AddCookie(sessionCookie)
+	logoutRequest.AddCookie(csrfCookie)
+	logoutRequest.Header.Set("X-Euryphos-CSRF",csrfCookie.Value)
+	logoutResponse := httptest.NewRecorder()
+	handler.ServeHTTP(logoutResponse,logoutRequest)
+	if logoutResponse.Code != http.StatusOK { t.Fatalf("logout failed: %d %s",logoutResponse.Code,logoutResponse.Body.String()) }
+
+	afterLogout := httptest.NewRequest(http.MethodGet, "/api/v1/groups", nil)
+	afterLogout.AddCookie(sessionCookie)
+	afterLogoutResponse := httptest.NewRecorder()
+	handler.ServeHTTP(afterLogoutResponse,afterLogout)
+	if afterLogoutResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("logged-out session remained authorized: %d",afterLogoutResponse.Code)
+	}
+}
+
 func performRequest(t *testing.T, handler http.Handler, method, path, token, body string, expectedStatus int) []byte {
 	t.Helper()
 	var requestBody *bytes.Reader
