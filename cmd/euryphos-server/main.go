@@ -1504,6 +1504,41 @@ func (s *Server) deviceDuplicates(w http.ResponseWriter, r *http.Request) {
 	write(w,http.StatusOK,response{"items":items,"count":len(items)})
 }
 
+func mergeTypedDeviceFields(ctx context.Context, tx *sql.Tx, sourceID, canonicalID string) error {
+	textColumns := []string{
+		"hostname","fqdn","os_family","os_version","os_distribution","os_distribution_version",
+		"os_architecture","os_build","os_install_date","kernel_version",
+		"directory_type","directory_domain","organizational_unit","directory_site",
+		"manufacturer","model","serial_number","smbios_uuid","chassis_type",
+		"cpu_model","cpu_vendor","cpu_architecture","bios_version","bios_release_date",
+		"last_boot","timezone","agent_version","local_ip","mac_address","default_gateway",
+		"dns_servers_json","connection_type",
+	}
+	numericColumns := []string{
+		"cpu_physical_cores","cpu_logical_processors","memory_total_bytes",
+		"root_total_bytes","root_free_bytes","root_available_bytes","uptime_seconds",
+	}
+	sets := make([]string,0,len(textColumns)+len(numericColumns)+4)
+	args := make([]any,0,len(textColumns)+len(numericColumns)+4)
+	for _,column:=range textColumns {
+		sets=append(sets,column+"=COALESCE(NULLIF("+column+",''),(SELECT "+column+" FROM devices WHERE id=?))")
+		args=append(args,sourceID)
+	}
+	for _,column:=range numericColumns {
+		sets=append(sets,column+"=COALESCE("+column+",(SELECT "+column+" FROM devices WHERE id=?))")
+		args=append(args,sourceID)
+	}
+	sets=append(sets,
+		"first_connected_at=COALESCE(first_connected_at,(SELECT first_connected_at FROM devices WHERE id=?))",
+		"last_seen=MAX(COALESCE(last_seen,''),(SELECT COALESCE(last_seen,'') FROM devices WHERE id=?))",
+		"last_connected_at=MAX(COALESCE(last_connected_at,''),(SELECT COALESCE(last_connected_at,'') FROM devices WHERE id=?))",
+		"last_inventory_at=MAX(COALESCE(last_inventory_at,''),(SELECT COALESCE(last_inventory_at,'') FROM devices WHERE id=?))",
+	)
+	args=append(args,sourceID,sourceID,sourceID,sourceID,canonicalID)
+	_,err:=tx.ExecContext(ctx,"UPDATE devices SET "+strings.Join(sets,",")+" WHERE id=?",args...)
+	return err
+}
+
 func (s *Server) mergeDevice(w http.ResponseWriter, r *http.Request) {
 	sourceID:=r.PathValue("id")
 	var in struct { CanonicalDeviceID string `json:"canonical_device_id"` }
@@ -1540,17 +1575,7 @@ func (s *Server) mergeDevice(w http.ResponseWriter, r *http.Request) {
 			SELECT group_id,?,added_by FROM device_group_memberships WHERE device_id=?`,
 		`INSERT OR IGNORE INTO job_targets(job_id,device_id,status,result,error,updated_at)
 			SELECT job_id,?,status,result,error,updated_at FROM job_targets WHERE device_id=?`,
-		`UPDATE devices SET
-			hostname=COALESCE(NULLIF(hostname,''),(SELECT hostname FROM devices WHERE id=?)),
-			fqdn=COALESCE(NULLIF(fqdn,''),(SELECT fqdn FROM devices WHERE id=?)),
-			manufacturer=COALESCE(NULLIF(manufacturer,''),(SELECT manufacturer FROM devices WHERE id=?)),
-			model=COALESCE(NULLIF(model,''),(SELECT model FROM devices WHERE id=?)),
-			serial_number=COALESCE(NULLIF(serial_number,''),(SELECT serial_number FROM devices WHERE id=?)),
-			smbios_uuid=COALESCE(NULLIF(smbios_uuid,''),(SELECT smbios_uuid FROM devices WHERE id=?)),
-			directory_domain=COALESCE(NULLIF(directory_domain,''),(SELECT directory_domain FROM devices WHERE id=?)),
-			organizational_unit=COALESCE(NULLIF(organizational_unit,''),(SELECT organizational_unit FROM devices WHERE id=?)),
-			last_seen=MAX(COALESCE(last_seen,''),(SELECT COALESCE(last_seen,'') FROM devices WHERE id=?)),
-			merged_into=NULL WHERE id=?`,
+		"__MERGE_TYPED_DEVICE_FIELDS__",
 		"DELETE FROM device_inventory WHERE device_id=?",
 		"DELETE FROM device_inventory_history WHERE device_id=?",
 		"DELETE FROM device_network_interfaces WHERE device_id=?",
@@ -1561,6 +1586,12 @@ func (s *Server) mergeDevice(w http.ResponseWriter, r *http.Request) {
 		"UPDATE device_duplicate_candidates SET status='merged' WHERE device_id=? AND candidate_device_id=?",
 	}
 	for index,statement:=range mergeStatements {
+		if statement=="__MERGE_TYPED_DEVICE_FIELDS__" {
+			if err:=mergeTypedDeviceFields(r.Context(),tx,sourceID,in.CanonicalDeviceID);err!=nil {
+				write(w,http.StatusInternalServerError,response{"error":"device_merge_fields_failed"});return
+			}
+			continue
+		}
 		var args []any
 		switch index {
 		case 0,1,2,3: args=[]any{in.CanonicalDeviceID,sourceID}
