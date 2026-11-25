@@ -348,6 +348,9 @@ func TestDuplicateMergePreservesAgentCredential(t *testing.T) {
 	_,err=db.Exec(`INSERT INTO device_storage_volumes(device_id,volume_key,name,filesystem,mount_point,capacity_bytes,free_bytes,observed_at)
 		VALUES(?,?,?,?,?,?,?,?)`,source,"rootfs","root","ext4","/",1099511627777,549755813889,time.Now().UTC().Format(time.RFC3339Nano))
 	if err!=nil { t.Fatal(err) }
+	_,err=db.Exec(`INSERT INTO device_services(device_id,service_key,name,manager,active_state,start_type,status,observed_at)
+		VALUES(?,?,?,?,?,?,?,?)`,source,"sshd.service","sshd.service","systemd","active","enabled","active",time.Now().UTC().Format(time.RFC3339Nano))
+	if err!=nil { t.Fatal(err) }
 	tx,err:=db.BeginTx(ctx,nil)
 	if err!=nil { t.Fatal(err) }
 	if err:=(&Server{db:db}).recordDuplicateCandidates(ctx,tx,source);err!=nil { tx.Rollback();t.Fatal(err) }
@@ -387,6 +390,11 @@ func TestDuplicateMergePreservesAgentCredential(t *testing.T) {
 	if err:=db.QueryRow("SELECT count(*) FROM device_storage_disks WHERE device_id=?",source).Scan(&diskCount);err!=nil { t.Fatal(err) }
 	if err:=db.QueryRow("SELECT count(*) FROM device_storage_volumes WHERE device_id=?",source).Scan(&volumeCount);err!=nil { t.Fatal(err) }
 	if diskCount!=0 || volumeCount!=0 { t.Fatalf("merged source still owns storage rows: disks=%d volumes=%d",diskCount,volumeCount) }
+	var serviceCount int
+	if err:=db.QueryRow("SELECT count(*) FROM device_services WHERE device_id=?",canonical).Scan(&serviceCount);err!=nil { t.Fatal(err) }
+	if serviceCount!=1 { t.Fatalf("merge did not preserve service rows: %d",serviceCount) }
+	if err:=db.QueryRow("SELECT count(*) FROM device_services WHERE device_id=?",source).Scan(&serviceCount);err!=nil { t.Fatal(err) }
+	if serviceCount!=0 { t.Fatalf("merged source still owns service rows: %d",serviceCount) }
 }
 
 func TestDuplicateDetectionFallsBackToSerialManufacturerModel(t *testing.T) {
@@ -873,6 +881,52 @@ func TestStorageMigrationCreatesNormalizedTables(t *testing.T) {
 		var count int
 		if err:=db.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?",table).Scan(&count);err!=nil { t.Fatal(err) }
 		if count!=1 { t.Fatalf("storage migration did not create table %s",table) }
+	}
+}
+
+func TestServicesInventoryNormalizationAndUnavailablePreservation(t *testing.T) {
+	db,err:=openDatabase(filepath.Join(t.TempDir(),"services.db"))
+	if err!=nil { t.Fatal(err) }
+	defer db.Close()
+	ctx,cancel:=context.WithTimeout(context.Background(),10*time.Second)
+	defer cancel()
+	if err:=migrate(ctx,db);err!=nil { t.Fatal(err) }
+	if _,err:=db.Exec("INSERT INTO devices(id,hostname,status) VALUES('service-device','service-host','approved')");err!=nil { t.Fatal(err) }
+	payload:=[]byte(`{
+		"schema_version":1,"collection_status":"collected","manager":"systemd",
+		"services":[
+			{"key":"ssh.service","name":"ssh.service","display_name":"OpenSSH server","manager":"systemd","load_state":"loaded","active_state":"active","sub_state":"running","start_type":"enabled","description":"Secure shell daemon","status":"active"},
+			{"key":"disabled.service","name":"disabled.service","manager":"systemd","active_state":"","start_type":"disabled","status":""}
+		]
+	}`)
+	server:=&Server{db:db}
+	tx,err:=db.BeginTx(ctx,nil)
+	if err!=nil { t.Fatal(err) }
+	if err:=server.applyServicesInventory(ctx,tx,"service-device",payload,time.Now().UTC().Format(time.RFC3339Nano));err!=nil {
+		tx.Rollback()
+		t.Fatalf("apply services inventory: %v",err)
+	}
+	if err:=tx.Commit();err!=nil { t.Fatal(err) }
+	var active,startType,description string
+	if err:=db.QueryRow("SELECT active_state,start_type,description FROM device_services WHERE device_id='service-device' AND service_key='ssh.service'").Scan(&active,&startType,&description);err!=nil { t.Fatal(err) }
+	if active!="active" || startType!="enabled" || description!="Secure shell daemon" {
+		t.Fatalf("normalized service values incorrect: active=%q start=%q desc=%q",active,startType,description)
+	}
+	unavailable:=[]byte(`{"schema_version":1,"collection_status":"unavailable","manager":"systemd","services":[]}`)
+	tx,err=db.BeginTx(ctx,nil)
+	if err!=nil { t.Fatal(err) }
+	if err:=server.applyServicesInventory(ctx,tx,"service-device",unavailable,time.Now().UTC().Format(time.RFC3339Nano));err!=nil {
+		tx.Rollback()
+		t.Fatalf("unavailable service collection should not clear known rows: %v",err)
+	}
+	if err:=tx.Commit();err!=nil { t.Fatal(err) }
+	var count int
+	if err:=db.QueryRow("SELECT count(*) FROM device_services WHERE device_id='service-device'").Scan(&count);err!=nil { t.Fatal(err) }
+	if count!=2 { t.Fatalf("unavailable collection erased known services: count=%d",count) }
+	handler:=securityHeaders(routes(&Server{db:db,adminToken:"admin-test-token"}))
+	detail:=performRequest(t,handler,http.MethodGet,"/api/v1/devices/service-device","admin-test-token","",http.StatusOK)
+	for _,expected:=range []string{`"services"`,`"ssh.service"`,`"OpenSSH server"`,`"start_type":"disabled"`} {
+		if !strings.Contains(string(detail),expected) { t.Fatalf("device detail missing %s: %s",expected,detail) }
 	}
 }
 
