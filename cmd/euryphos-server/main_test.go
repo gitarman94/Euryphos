@@ -440,6 +440,11 @@ func TestJobAlertResolutionMarksOutcomeIndeterminateAndRejectsLateResult(t *test
 	lateResult := "{\"claim_id\":\"33333333-3333-4333-8333-333333333333\",\"status\":\"succeeded\",\"result\":{\"message\":\"late success\"}}"
 	performRequest(t, handler, http.MethodPost,
 		"/api/v1/devices/"+deviceID+"/jobs/"+jobID+"/result", deviceToken, lateResult, http.StatusConflict)
+	resolution := performRequest(t, handler, http.MethodGet,
+		"/api/v1/devices/"+deviceID+"/jobs/"+jobID+"/claims/"+claimID, deviceToken, "", http.StatusOK)
+	if !strings.Contains(string(resolution), "\"journal_action\":\"retire\"") {
+		t.Fatalf("explicit indeterminate decision did not authorize journal retirement: %s", resolution)
+	}
 	var eventCount int
 	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM audit_log WHERE event_type='job.target.marked_indeterminate' AND target_id=?", jobID+"/"+deviceID).Scan(&eventCount); err != nil || eventCount != 1 {
 		t.Fatalf("indeterminate resolution audit missing: rows=%d err=%v", eventCount, err)
@@ -484,6 +489,11 @@ func TestJobAlertRetryRequiresSafeActionAndStoppedConfirmation(t *testing.T) {
 	lateResult := "{\"claim_id\":\"44444444-4444-4444-8444-444444444444\",\"status\":\"succeeded\",\"result\":{\"message\":\"late old result\"}}"
 	performRequest(t, handler, http.MethodPost,
 		"/api/v1/devices/"+deviceID+"/jobs/"+jobID+"/result", deviceToken, lateResult, http.StatusConflict)
+	resolution := performRequest(t, handler, http.MethodGet,
+		"/api/v1/devices/"+deviceID+"/jobs/"+jobID+"/claims/"+claimID, deviceToken, "", http.StatusOK)
+	if !strings.Contains(string(resolution), "\"journal_action\":\"retire\"") {
+		t.Fatalf("explicit retry decision did not authorize old journal retirement: %s", resolution)
+	}
 	next := performRequest(t, handler, http.MethodGet,
 		"/api/v1/devices/"+deviceID+"/jobs/next", deviceToken, "", http.StatusOK)
 	var delivery struct {
