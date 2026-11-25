@@ -915,9 +915,13 @@ func (s *Server) inventory(w http.ResponseWriter, r *http.Request) {
 	}
 	deviceID := r.PathValue("id")
 	var normalizeErr error
-	if unchangedPayload && (in.Category=="network" || in.Category=="software") {
+	if unchangedPayload && (in.Category=="network" || in.Category=="software" || in.Category=="storage") {
 		if in.Category=="software" {
 			_,normalizeErr=tx.ExecContext(r.Context(),"UPDATE installed_software SET last_seen_at=? WHERE device_id=?",observedAt,deviceID)
+		} else if in.Category=="storage" {
+			if _,normalizeErr=tx.ExecContext(r.Context(),"UPDATE device_storage_disks SET observed_at=? WHERE device_id=?",observedAt,deviceID); normalizeErr==nil {
+				_,normalizeErr=tx.ExecContext(r.Context(),"UPDATE device_storage_volumes SET observed_at=? WHERE device_id=?",observedAt,deviceID)
+			}
 		}
 	} else {
 		switch in.Category {
