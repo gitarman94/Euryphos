@@ -2795,7 +2795,7 @@ func (s *Server) jobResult(w http.ResponseWriter, r *http.Request) {
 	_, err = tx.ExecContext(r.Context(), `UPDATE jobs SET status = CASE
 		WHEN EXISTS (SELECT 1 FROM job_targets WHERE job_id = ? AND status IN ('queued', 'received', 'running')) THEN
 			CASE WHEN EXISTS (SELECT 1 FROM job_targets WHERE job_id = ? AND status = 'running') THEN 'running' ELSE 'queued' END
-		WHEN EXISTS (SELECT 1 FROM job_targets WHERE job_id = ? AND status IN ('failed', 'cancelled')) THEN 'completed_with_errors'
+		WHEN EXISTS (SELECT 1 FROM job_targets WHERE job_id = ? AND status IN ('failed', 'cancelled', 'indeterminate')) THEN 'completed_with_errors'
 		ELSE 'completed' END WHERE id = ?`,
 		r.PathValue("job"), r.PathValue("job"), r.PathValue("job"), r.PathValue("job"))
 	if err != nil {
