@@ -530,6 +530,7 @@ func (s *Server) deviceAuth(next http.HandlerFunc) http.HandlerFunc {
 
 func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 	if !constantString(token(r), s.enrollToken) {
+		_ = auditEvent(r.Context(), s.db, r, "enrollment", "", "auth.enrollment.failure", "denied", "enrollment", "", nil)
 		write(w, http.StatusUnauthorized, response{"error": "invalid_enrollment_token"})
 		return
 	}
@@ -604,6 +605,7 @@ func (s *Server) revoke(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
 	if !bearer(r, s.adminToken) {
+		_ = auditEvent(r.Context(), s.db, r, "admin", "", "auth.admin.failure", "denied", "api", r.URL.Path, map[string]any{"method": r.Method})
 		write(w, http.StatusUnauthorized, response{"error": "unauthorized"})
 		return false
 	}
@@ -724,12 +726,6 @@ type groupRule struct {
 	Field    string `json:"field"`
 	Operator string `json:"operator"`
 	Value    string `json:"value"`
-}
-
-type deviceQuery interface {
-	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
-	QueryRowContext(context.Context, string, ...any) *sql.Row
-	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
 
 func mapValue(value any) map[string]any {
@@ -988,11 +984,6 @@ func (s *Server) refreshDynamicMemberships(ctx context.Context, tx *sql.Tx, devi
 		if err:=s.refreshOneDynamicMembership(ctx,tx,item.id,item.operator,item.rules,deviceID);err!=nil { return err }
 	}
 	return nil
-}
-
-func (s *Server) recordDuplicateCandidatesAndRefresh(ctx context.Context, tx *sql.Tx, deviceID string) error {
-	if err := s.recordDuplicateCandidates(ctx,tx,deviceID); err != nil { return err }
-	return s.refreshDynamicMemberships(ctx,tx,deviceID)
 }
 
 func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
