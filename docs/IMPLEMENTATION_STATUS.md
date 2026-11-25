@@ -100,3 +100,8 @@ The server uses a 90-second default online grace period. Set `EURYPHOS_ONLINE_GR
 
 
 The Devices-list API also accepts `connection_state=online`, `offline`, or `never_connected`. Presence is calculated from server timestamps and the same online-grace threshold, not from a client-reported status string.
+
+
+## Automated validation
+
+GitHub Actions run [45598630499](https://github.com/gitarman94/Euryphos/actions/runs/45598630499), against commit `55aa9307bd9cd2c246b1276a6a5d154ff6be1f6d`, completed successfully on 2026-11-25. `go mod tidy`, `go test ./...`, `go vet ./...`, and `go build -trimpath ./cmd/euryphos-server` all passed.
