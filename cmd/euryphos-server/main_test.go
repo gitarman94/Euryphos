@@ -930,6 +930,21 @@ func TestServicesInventoryNormalizationAndUnavailablePreservation(t *testing.T) 
 	}
 }
 
+func TestServiceControlJobPayloadIsStrictlyTyped(t *testing.T) {
+	valid:=[]byte(`{"service_name":"ssh.service","operation":"restart"}`)
+	if !validServiceControlPayload(valid) { t.Fatal("valid service-control payload was rejected") }
+	invalid:=[][]byte{
+		[]byte(`{"service_name":"../sshd","operation":"start"}`),
+		[]byte(`{"service_name":"sshd;touch /tmp/x","operation":"start"}`),
+		[]byte(`{"service_name":"sshd","operation":"exec"}`),
+		[]byte(`{"service_name":"","operation":"stop"}`),
+		[]byte(`{"service_name":"sshd","operation":"start;stop"}`),
+	}
+	for _,payload:=range invalid {
+		if validServiceControlPayload(payload) { t.Errorf("unsafe service-control payload accepted: %s",payload) }
+	}
+}
+
 func performRequest(t *testing.T, handler http.Handler, method, path, token, body string, expectedStatus int) []byte {
 	t.Helper()
 	var requestBody *bytes.Reader
