@@ -547,11 +547,24 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 	}
 	id := uuid()
 	secret := randomToken()
-	_, err := s.db.ExecContext(r.Context(),
-		"INSERT INTO devices(id, hostname, os_family, os_version, token_hash) VALUES (?, ?, ?, ?, ?)",
-		id, in.Hostname, in.OSFamily, in.OSVersion, hash(secret))
+	tx, err := s.db.BeginTx(r.Context(), nil)
 	if err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "database_error"})
+		return
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(r.Context(),
+		"INSERT INTO devices(id, hostname, os_family, os_version, token_hash) VALUES (?, ?, ?, ?, ?)",
+		id, in.Hostname, in.OSFamily, in.OSVersion, hash(secret)); err != nil {
 		write(w, http.StatusInternalServerError, response{"error": "enrollment_failed"})
+		return
+	}
+	if err := auditEvent(r.Context(), tx, r, "enrollment", "enrollment-token", "device.enrolled", "pending_approval", "device", id, map[string]any{"hostname": in.Hostname, "os_family": in.OSFamily}); err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "audit_write_failed"})
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "enrollment_commit_failed"})
 		return
 	}
 	write(w, http.StatusCreated, response{"device_id": id, "device_token": secret, "status": "pending_approval"})
@@ -561,33 +574,35 @@ func (s *Server) approve(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r) {
 		return
 	}
-	result, err := s.db.ExecContext(r.Context(), "UPDATE devices SET status = 'approved' WHERE id = ? AND status = 'pending'", r.PathValue("id"))
-	if err != nil {
-		write(w, http.StatusInternalServerError, response{"error": "database_error"})
-		return
-	}
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil { write(w, http.StatusInternalServerError, response{"error":"database_error"}); return }
+	defer tx.Rollback()
+	result, err := tx.ExecContext(r.Context(), "UPDATE devices SET status = 'approved' WHERE id = ? AND status = 'pending'", r.PathValue("id"))
+	if err != nil { write(w, http.StatusInternalServerError, response{"error":"database_error"}); return }
 	count, _ := result.RowsAffected()
-	if count == 0 {
-		write(w, http.StatusNotFound, response{"error": "pending_device_not_found"})
-		return
+	if count == 0 { write(w,http.StatusNotFound,response{"error":"pending_device_not_found"});return }
+	if err:=auditEvent(r.Context(),tx,r,"admin","configured-admin","device.approved","success","device",r.PathValue("id"),nil);err!=nil {
+		write(w,http.StatusInternalServerError,response{"error":"audit_write_failed"});return
 	}
-	write(w, http.StatusOK, response{"status": "approved"})
+	if err:=tx.Commit();err!=nil { write(w,http.StatusInternalServerError,response{"error":"device_approval_commit_failed"});return }
+	write(w,http.StatusOK, response{"status": "approved"})
 }
 
 func (s *Server) revoke(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r) {
 		return
 	}
-	result, err := s.db.ExecContext(r.Context(), "UPDATE devices SET status = 'revoked', token_hash = NULL WHERE id = ?", r.PathValue("id"))
-	if err != nil {
-		write(w, http.StatusInternalServerError, response{"error": "database_error"})
-		return
-	}
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil { write(w,http.StatusInternalServerError,response{"error":"database_error"});return }
+	defer tx.Rollback()
+	result, err := tx.ExecContext(r.Context(), "UPDATE devices SET status = 'revoked', token_hash = NULL WHERE id = ? AND merged_into IS NULL", r.PathValue("id"))
+	if err != nil { write(w,http.StatusInternalServerError,response{"error":"database_error"});return }
 	count, _ := result.RowsAffected()
-	if count == 0 {
-		write(w, http.StatusNotFound, response{"error": "device_not_found"})
-		return
+	if count == 0 { write(w,http.StatusNotFound,response{"error":"device_not_found"});return }
+	if err:=auditEvent(r.Context(),tx,r,"admin","configured-admin","device.revoked","success","device",r.PathValue("id"),nil);err!=nil {
+		write(w,http.StatusInternalServerError,response{"error":"audit_write_failed"});return
 	}
+	if err:=tx.Commit();err!=nil { write(w,http.StatusInternalServerError,response{"error":"device_revocation_commit_failed"});return }
 	write(w, http.StatusOK, response{"status": "revoked"})
 }
 
@@ -1626,6 +1641,10 @@ func (s *Server) createJob(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusBadRequest, response{"error": "no_approved_targets"})
 		return
 	}
+	if err := auditEvent(r.Context(), tx, r, "admin", "configured-admin", "job.created", "success", "job", id, map[string]any{"action": in.Action, "target_count": count}); err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "audit_write_failed"})
+		return
+	}
 	if err = tx.Commit(); err != nil {
 		write(w, http.StatusInternalServerError, response{"error": "job_commit_failed"})
 		return
@@ -1709,6 +1728,10 @@ func (s *Server) jobResult(w http.ResponseWriter, r *http.Request) {
 		r.PathValue("job"), r.PathValue("job"), r.PathValue("job"), r.PathValue("job"))
 	if err != nil {
 		write(w, http.StatusInternalServerError, response{"error": "job_aggregation_failed"})
+		return
+	}
+	if err := auditEvent(r.Context(), s.db, r, "device", r.PathValue("id"), "job.execution.result", in.Status, "job", r.PathValue("job"), map[string]any{"error": in.Error}); err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "audit_write_failed"})
 		return
 	}
 	write(w, http.StatusOK, response{"status": "recorded"})
