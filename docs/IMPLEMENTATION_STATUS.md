@@ -21,7 +21,7 @@
 - Most privileged job executors are not implemented. Patch installation, software deployment/removal, configuration enforcement, service control, reboot/shutdown, and agent self-update remain incomplete.
 - No native macOS client exists yet; it is explicitly in the roadmap.
 - **Web UI:** no browser-based dashboard, Devices list, or per-device details page exists yet. No frontend assets/templates, browser authentication/session flow, or working navigation is present.
-- **Device APIs:** `GET /api/v1/devices` returns only the current summary fields. `GET /api/v1/devices/{id}`, inventory detail/history, and activity endpoints are not implemented; the required field catalog is specified in `docs/DEVICE_MANAGEMENT_UI_SPEC.md`.
+- **Device APIs:** `GET /api/v1/devices` returns only the current summary fields. `GET /api/v1/devices/{id}` and `GET /api/v1/devices/{id}/inventory/history` now provide initial detail and snapshot retrieval. Full field coverage, activity endpoints, fleet search/filter/pagination, and chart-ready metric aggregation remain incomplete; the required field catalog is specified in `docs/DEVICE_MANAGEMENT_UI_SPEC.md`.
 - **Endpoint telemetry:** the current agent does not collect most detailed identity, domain/OU, hardware, boot, storage, network, certificate, battery, GPS, or user-session facts. The field and privacy contract is specified in the Euryphos-Agent repository's `docs/TELEMETRY_COLLECTION_SPEC.md`.
 - There is no SSO/MFA/RBAC system, durable push channel, message broker, worker pool, comprehensive audit system, or package repository.
 - SQLite is a single-node embedded database with one writer at a time. Fleet-scale throughput, retention, backup/restore, integrity check, and recovery behavior still require measurement and tests.
@@ -55,7 +55,7 @@
 
 ## Device management UI and complete inventory requirements
 
-Device list and full device-detail requirements are specified in `docs/DEVICE_MANAGEMENT_UI_SPEC.md`. The current repository still has no browser UI or device detail API. The endpoint telemetry requirements, including client-local GPS opt-in with a default-off hard disable, are specified in the Euryphos-Agent repository. These are requirements only; no listed field or UI page should be considered implemented until source code, persistence, and end-to-end tests demonstrate it.
+Device list and full device-detail requirements are specified in `docs/DEVICE_MANAGEMENT_UI_SPEC.md`. The current repository still has no browser UI. Initial administrator device-detail and inventory-history APIs are now implemented, but they do not yet cover the complete field catalog, activity timeline, or trend aggregation. The endpoint telemetry requirements, including client-local GPS opt-in with a default-off hard disable, are specified in the Euryphos-Agent repository. These are requirements only; no listed field or UI page should be considered implemented until source code, persistence, and end-to-end tests demonstrate it.
 
 
 ## Inventory history and device detail implementation
