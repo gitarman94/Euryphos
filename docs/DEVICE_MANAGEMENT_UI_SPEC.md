@@ -156,6 +156,61 @@ The online threshold must be configurable and take heartbeat interval, expected 
 
 The current agent uses a bearer-token enrollment/device credential. Certificate fields must display “Not configured” until certificate-based identity actually exists; do not label the bearer token as a certificate.
 
+
+## 2.9 Charts, trends, and comparison views
+
+The device details experience must include useful visual history where the underlying measurements exist. Do not render placeholder charts or invent historical points from the current snapshot.
+
+### Per-device charts
+
+- CPU utilization over selectable time ranges (for example, last hour, 24 hours, 7 days, 30 days) when a supported collector reports samples.
+- Memory usage/availability trend.
+- Disk capacity and free-space trends per volume.
+- Network throughput (bytes sent/received) and connectivity/latency samples where measured.
+- Battery health/capacity and charge history on supported battery-powered devices.
+- Agent connectivity and heartbeat history, with outages and reconnects.
+- Patch/job activity timeline with success/failure states.
+- Inventory changes over time for selected facts (OS/build, software additions/removals, hardware, network configuration, certificates).
+
+Every chart must show its time range, units, sampling interval, source, and gaps in collection. A missing sample is a gap, not a zero. Respect data-retention limits and user timezone display settings. Charts should degrade gracefully when a platform cannot supply a metric.
+
+### Fleet and device comparison
+
+Provide a comparison mode that lets an authorized operator select multiple devices from the Devices table and compare normalized fields side by side.
+
+Minimum comparison dimensions:
+- Identity and platform: OS type/version/build/architecture, domain/OU, device type/chassis.
+- Hardware: manufacturer/model, CPU model/architecture/cores, RAM, GPU/DPU, BIOS, battery health.
+- Storage: per-volume and aggregate total/free space.
+- Network: interface types, link state, local IPs, gateways, DNS, DHCP state, and connection type.
+- Agent/security: agent version/update channel/service health, certificate type/expiry/renewal state, and security posture when collected.
+- Presence: online status, last connected, last boot, uptime, and inventory freshness.
+- Software and patch state: installed application/version differences and pending/failed update state where supported.
+
+Comparison behavior:
+- Align common normalized fields and clearly identify missing, unsupported, permission-denied, privacy-disabled, and stale values.
+- Highlight differences without treating one device as the baseline unless the operator explicitly chooses a baseline.
+- Support selecting a baseline/reference device and showing deviations from it.
+- Permit export only to users with the required inventory-export permission; audit exports of sensitive device identifiers and user/network data.
+- Do not compare GPS coordinates by default. GPS comparison requires explicit permission and an additional confirmation because location is sensitive.
+
+### Dashboard and list visualizations
+
+- Fleet status summary cards for total devices, online/offline, pending approval, revoked, and stale inventory.
+- Trend charts for enrollment, online population, inventory freshness, agent versions, and job outcomes over time.
+- Distribution charts for OS families/versions, device types, hardware models, and agent versions.
+- All summary and chart data must come from server queries over persisted facts/events; never hardcode sample data in production views.
+
+## 2.10 Expanded acceptance criteria for charts and comparisons
+
+- [ ] Time-series metrics persist samples at defined intervals and survive service restart.
+- [ ] Per-device charts use real samples, display gaps and source metadata, and support the defined time filters.
+- [ ] Fleet charts aggregate actual persisted data and apply current filters/permissions.
+- [ ] Multi-select comparison works for at least two devices and scales to a bounded configured maximum.
+- [ ] Baseline comparison is opt-in and clearly labels the selected reference device.
+- [ ] Missing/stale/unsupported/privacy-disabled fields remain distinguishable in comparison output.
+- [ ] GPS is excluded from default comparisons and exports and requires explicit sensitive-data permission plus confirmation.
+
 ## 3. Data quality, normalization, and permissions
 
 - Every fact should have `observed_at`, server `received_at`, source/provider, and optional error/status metadata.
