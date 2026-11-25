@@ -37,14 +37,16 @@
 
 ## Validation status
 
-GitHub Actions run [45604661485](https://github.com/gitarman94/Euryphos/actions/runs/45604661485), on commit `b897c50b775528d61c69da06cfe9e3e5fdc19d00`, completed successfully on 2026-11-25. It passed:
+GitHub Actions run [45604879337](https://github.com/gitarman94/Euryphos/actions/runs/45604879337), on commit `54254076567fe54195a25b8c479fdbf09df600c8`, completed successfully on 2026-11-25. It passed:
 
 - `go mod tidy`
 - `go test ./...`
 - `go vet ./...`
 - `go build -trimpath ./cmd/euryphos-server`
 
-The passing tests cover legacy SQLite migration, generated device IDs, exact 64-bit inventory values, device detail and history, search and presence filters, AD/Linux-compatible dynamic groups, duplicate candidates and serial fallback, explicit merge and old-token continuity, audit events (including job-result events), and change-only inventory-history behavior.
+The passing tests cover legacy SQLite migration, generated device IDs, exact 64-bit inventory values, device detail/history, search and presence filters, AD/Linux-compatible dynamic groups, duplicate candidates and serial fallback, rejection of OEM/unknown identity placeholders, explicit merge and old-token continuity, audit events (including atomic job-result audit), and change-only inventory-history behavior.
+
+Duplicate candidates are checked only when a device first supplies or changes hardware identity. Indexed SMBIOS UUID and serial/manufacturer/model lookups avoid repeating a fleet scan on ordinary telemetry refreshes.
 
 This validates the tested Go/SQLite code paths. It does not certify production deployment, fleet-scale throughput, backup/restore, trusted-proxy configuration, browser UI, or end-to-end operation with installed endpoint agents.
 
