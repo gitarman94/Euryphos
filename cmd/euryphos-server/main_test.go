@@ -434,6 +434,65 @@ func TestAdminSessionAuditSuccessAndFailure(t *testing.T) {
 	if failures!=2 || successes!=1 { t.Fatalf("unexpected auth audit rows: failures=%d successes=%d",failures,successes) }
 }
 
+func TestDynamicGroupUpdateAndGroupTargetedJobs(t *testing.T) {
+	db, err := openDatabase(filepath.Join(t.TempDir(), "group-jobs.db"))
+	if err != nil { t.Fatal(err) }
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := migrate(ctx, db); err != nil { t.Fatal(err) }
+	_, err = db.Exec(`INSERT INTO devices(id,hostname,os_family,status) VALUES
+		('linux-1','linux-one','linux','approved'),
+		('windows-1','windows-one','windows','approved')`)
+	if err != nil { t.Fatal(err) }
+	handler := securityHeaders(routes(&Server{db:db,adminToken:"admin-test-token",onlineGrace:time.Minute}))
+
+	raw := performRequest(t, handler, http.MethodPost, "/api/v1/groups", "admin-test-token",
+		`{"name":"Linux Servers","group_type":"dynamic","match_operator":"all","rules":[{"field":"os_family","operator":"eq","value":"linux"}]}`,
+		http.StatusCreated)
+	var created struct { ID int64 `json:"id"` }
+	if err := json.Unmarshal(raw, &created); err != nil || created.ID < 1 {
+		t.Fatalf("invalid group creation response: %s (%v)", raw, err)
+	}
+	groupPath := "/api/v1/groups/" + strconv.FormatInt(created.ID, 10)
+	members := performRequest(t, handler, http.MethodGet, groupPath+"/members", "admin-test-token", "", http.StatusOK)
+	if !strings.Contains(string(members), "linux-1") || strings.Contains(string(members), "windows-1") {
+		t.Fatalf("initial dynamic membership is incorrect: %s", members)
+	}
+
+	performRequest(t, handler, http.MethodPut, groupPath, "admin-test-token",
+		`{"name":"Windows Servers","description":"Updated rule","group_type":"dynamic","match_operator":"all","rules":[{"field":"os_family","operator":"eq","value":"windows"}]}`,
+		http.StatusOK)
+	members = performRequest(t, handler, http.MethodGet, groupPath+"/members", "admin-test-token", "", http.StatusOK)
+	if !strings.Contains(string(members), "windows-1") || strings.Contains(string(members), "linux-1") {
+		t.Fatalf("updated dynamic membership is incorrect: %s", members)
+	}
+
+	jobRaw := performRequest(t, handler, http.MethodPost, "/api/v1/jobs", "admin-test-token",
+		`{"action":"inventory.refresh","group_ids":[`+strconv.FormatInt(created.ID,10)+`]}`, http.StatusAccepted)
+	var job struct { ID string `json:"job_id"`; TargetCount int `json:"target_count"` }
+	if err := json.Unmarshal(jobRaw, &job); err != nil || job.ID == "" || job.TargetCount != 1 {
+		t.Fatalf("group job did not expand to exactly one approved device: %s (%v)", jobRaw, err)
+	}
+	var targetID string
+	if err := db.QueryRow("SELECT device_id FROM job_targets WHERE job_id=?", job.ID).Scan(&targetID); err != nil || targetID != "windows-1" {
+		t.Fatalf("group job selected wrong target: %q (%v)", targetID, err)
+	}
+	if _, err := db.Exec("UPDATE machine_groups SET name='Renamed Group' WHERE id=?", created.ID); err != nil { t.Fatal(err) }
+	performRequest(t, handler, http.MethodDelete, groupPath, "admin-test-token", "", http.StatusOK)
+
+	jobDetail := performRequest(t, handler, http.MethodGet, "/api/v1/jobs/"+job.ID, "admin-test-token", "", http.StatusOK)
+	if !strings.Contains(string(jobDetail), `"name":"Windows Servers"`) || !strings.Contains(string(jobDetail), "windows-1") {
+		t.Fatalf("job history did not retain group name and expanded target after deletion: %s", jobDetail)
+	}
+	var groupAudit, jobGroupSnapshot int
+	if err := db.QueryRow("SELECT count(*) FROM audit_log WHERE event_type='group.updated' AND target_id=?", strconv.FormatInt(created.ID,10)).Scan(&groupAudit); err != nil { t.Fatal(err) }
+	if err := db.QueryRow("SELECT count(*) FROM job_group_targets WHERE job_id=?", job.ID).Scan(&jobGroupSnapshot); err != nil { t.Fatal(err) }
+	if groupAudit != 1 || jobGroupSnapshot != 1 {
+		t.Fatalf("expected group update audit and durable job-group snapshot; audit=%d snapshot=%d",groupAudit,jobGroupSnapshot)
+	}
+}
+
 func performRequest(t *testing.T, handler http.Handler, method, path, token, body string, expectedStatus int) []byte {
 	t.Helper()
 	var requestBody *bytes.Reader
