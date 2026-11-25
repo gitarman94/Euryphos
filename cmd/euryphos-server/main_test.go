@@ -342,6 +342,12 @@ func TestDuplicateMergePreservesAgentCredential(t *testing.T) {
 		source,"workstation-b","Contoso","Model X","SERIAL-77","11111111-2222-3333-4444-555555555555",
 		"corp.example","Servers/Finance","windows","Example CPU",17179869184,"approved",hash("source-token"))
 	if err!=nil { t.Fatal(err) }
+	_,err=db.Exec(`INSERT INTO device_storage_disks(device_id,disk_key,name,model,capacity_bytes,observed_at)
+		VALUES(?,?,?,?,?,?)`,source,"disk0","nvme0n1","Merge Test NVMe",1099511627777,time.Now().UTC().Format(time.RFC3339Nano))
+	if err!=nil { t.Fatal(err) }
+	_,err=db.Exec(`INSERT INTO device_storage_volumes(device_id,volume_key,name,filesystem,mount_point,capacity_bytes,free_bytes,observed_at)
+		VALUES(?,?,?,?,?,?,?,?)`,source,"rootfs","root","ext4","/",1099511627777,549755813889,time.Now().UTC().Format(time.RFC3339Nano))
+	if err!=nil { t.Fatal(err) }
 	tx,err:=db.BeginTx(ctx,nil)
 	if err!=nil { t.Fatal(err) }
 	if err:=(&Server{db:db}).recordDuplicateCandidates(ctx,tx,source);err!=nil { tx.Rollback();t.Fatal(err) }
@@ -374,6 +380,13 @@ func TestDuplicateMergePreservesAgentCredential(t *testing.T) {
 		t.Fatalf("merge did not fill canonical typed fields: domain=%q ou=%q distro=%q cpu=%q memory=%d",
 			directoryDomain,ou,distribution,cpuModel,memoryTotal)
 	}
+	var diskCount,volumeCount int
+	if err:=db.QueryRow("SELECT count(*) FROM device_storage_disks WHERE device_id=?",canonical).Scan(&diskCount);err!=nil { t.Fatal(err) }
+	if err:=db.QueryRow("SELECT count(*) FROM device_storage_volumes WHERE device_id=?",canonical).Scan(&volumeCount);err!=nil { t.Fatal(err) }
+	if diskCount!=1 || volumeCount!=1 { t.Fatalf("merge did not preserve storage rows: disks=%d volumes=%d",diskCount,volumeCount) }
+	if err:=db.QueryRow("SELECT count(*) FROM device_storage_disks WHERE device_id=?",source).Scan(&diskCount);err!=nil { t.Fatal(err) }
+	if err:=db.QueryRow("SELECT count(*) FROM device_storage_volumes WHERE device_id=?",source).Scan(&volumeCount);err!=nil { t.Fatal(err) }
+	if diskCount!=0 || volumeCount!=0 { t.Fatalf("merged source still owns storage rows: disks=%d volumes=%d",diskCount,volumeCount) }
 }
 
 func TestDuplicateDetectionFallsBackToSerialManufacturerModel(t *testing.T) {
