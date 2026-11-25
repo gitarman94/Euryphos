@@ -294,6 +294,117 @@ func TestSQLiteServerAgentProtocol(t *testing.T) {
 	}
 }
 
+func TestNextJobReclaimsExpiredReceiveAndDispatchesRunningJobs(t *testing.T) {
+	db, err := openDatabase(filepath.Join(t.TempDir(), "job-leases.db"))
+	if err != nil {
+		t.Fatalf("open SQLite database: %v", err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := migrate(ctx, db); err != nil {
+		t.Fatalf("migrate database: %v", err)
+	}
+
+	devices := []struct {
+		id    string
+		token string
+	}{
+		{"device-expired", "expired-token"},
+		{"device-active", "active-token"},
+		{"device-running", "running-token"},
+		{"device-running-queued", "running-queued-token"},
+	}
+	for _, device := range devices {
+		if _, err := db.ExecContext(ctx,
+			"INSERT INTO devices(id,status,token_hash) VALUES(?, 'approved', ?)",
+			device.id, hash(device.token)); err != nil {
+			t.Fatalf("insert %s: %v", device.id, err)
+		}
+	}
+	jobs := []struct {
+		id     string
+		status string
+	}{
+		{"job-expired", "queued"},
+		{"job-active", "queued"},
+		{"job-running", "running"},
+	}
+	for _, job := range jobs {
+		if _, err := db.ExecContext(ctx,
+			"INSERT INTO jobs(id,action,payload,status) VALUES(?, 'inventory.refresh', '{}', ?)",
+			job.id, job.status); err != nil {
+			t.Fatalf("insert %s: %v", job.id, err)
+		}
+	}
+	for _, target := range []struct {
+		jobID     string
+		deviceID  string
+		status    string
+		updatedAt string
+	}{
+		{"job-expired", "device-expired", "received", "datetime('now','-16 minutes')"},
+		{"job-active", "device-active", "received", "CURRENT_TIMESTAMP"},
+		{"job-running", "device-running", "running", "CURRENT_TIMESTAMP"},
+		{"job-running", "device-running-queued", "queued", "CURRENT_TIMESTAMP"},
+	} {
+		query := "INSERT INTO job_targets(job_id,device_id,status,updated_at) VALUES(?,?,?, " + target.updatedAt + ")"
+		if _, err := db.ExecContext(ctx, query, target.jobID, target.deviceID, target.status); err != nil {
+			t.Fatalf("insert target %s/%s: %v", target.jobID, target.deviceID, err)
+		}
+	}
+
+	handler := securityHeaders(routes(&Server{db: db}))
+	var expiredResponse struct {
+		Job *struct {
+			ID string `json:"id"`
+		} `json:"job"`
+	}
+	expiredBody := performRequest(t, handler, http.MethodGet,
+		"/api/v1/devices/device-expired/jobs/next", "expired-token", "", http.StatusOK)
+	if err := json.Unmarshal(expiredBody, &expiredResponse); err != nil {
+		t.Fatalf("decode recovered job response: %v", err)
+	}
+	if expiredResponse.Job == nil || expiredResponse.Job.ID != "job-expired" {
+		t.Fatalf("expired received job was not reclaimed: %s", expiredBody)
+	}
+
+	var activeResponse struct {
+		Job *json.RawMessage `json:"job"`
+	}
+	activeBody := performRequest(t, handler, http.MethodGet,
+		"/api/v1/devices/device-active/jobs/next", "active-token", "", http.StatusOK)
+	if err := json.Unmarshal(activeBody, &activeResponse); err != nil {
+		t.Fatalf("decode active lease response: %v", err)
+	}
+	if activeResponse.Job != nil {
+		t.Fatalf("unexpired received job was delivered twice: %s", activeBody)
+	}
+
+	var runningResponse struct {
+		Job *struct {
+			ID string `json:"id"`
+		} `json:"job"`
+	}
+	runningBody := performRequest(t, handler, http.MethodGet,
+		"/api/v1/devices/device-running-queued/jobs/next", "running-queued-token", "", http.StatusOK)
+	if err := json.Unmarshal(runningBody, &runningResponse); err != nil {
+		t.Fatalf("decode running job response: %v", err)
+	}
+	if runningResponse.Job == nil || runningResponse.Job.ID != "job-running" {
+		t.Fatalf("queued target was not dispatched while another target was running: %s", runningBody)
+	}
+
+	var recoveryAuditCount int
+	if err := db.QueryRowContext(ctx,
+		"SELECT count(*) FROM audit_log WHERE event_type='job.target.requeued' AND target_id='device-expired'").Scan(&recoveryAuditCount); err != nil {
+		t.Fatalf("count job recovery audit events: %v", err)
+	}
+	if recoveryAuditCount != 1 {
+		t.Fatalf("expected one recovery audit event, got %d", recoveryAuditCount)
+	}
+}
+
 func TestGroupsUseDirectoryAndLinuxCompatibleAttributes(t *testing.T) {
 	db, err := openDatabase(filepath.Join(t.TempDir(), "groups.db"))
 	if err != nil { t.Fatal(err) }
