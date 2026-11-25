@@ -156,6 +156,7 @@ func routes(s *Server) http.Handler {
 	mux.HandleFunc("POST /api/v1/job-alerts/{id}/resolve", s.admin(s.resolveJobAlert))
 	mux.HandleFunc("POST /api/v1/jobs", s.admin(s.createJob))
 	mux.HandleFunc("GET /api/v1/devices/{id}/jobs/next", s.deviceAuth(s.nextJob))
+	mux.HandleFunc("GET /api/v1/devices/{id}/jobs/{job}/claims/{claim}", s.deviceAuth(s.jobClaimResolution))
 	mux.HandleFunc("POST /api/v1/devices/{id}/jobs/{job}/result", s.deviceAuth(s.jobResult))
 	mux.HandleFunc("GET /api/v1/jobs/{id}", s.admin(s.getJob))
 	mux.HandleFunc("GET /api/v1/groups", s.admin(s.listGroups))
@@ -2685,6 +2686,54 @@ func (s *Server) nextJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	write(w, http.StatusOK, response{"job": map[string]any{"id": jobID, "action": action, "payload": json.RawMessage(payload), "claim_id": claimID, "attempt": attempt}})
+}
+
+
+func (s *Server) jobClaimResolution(w http.ResponseWriter, r *http.Request) {
+	deviceID, jobID, claimID := r.PathValue("id"), r.PathValue("job"), r.PathValue("claim")
+	if len(claimID) != 36 || strings.TrimSpace(claimID) != claimID {
+		write(w, http.StatusBadRequest, response{"error": "invalid_claim_id"})
+		return
+	}
+	var targetStatus, currentClaim string
+	if err := s.db.QueryRowContext(r.Context(), `SELECT status,COALESCE(claim_id,'')
+		FROM job_targets WHERE job_id=? AND device_id=?`, jobID, deviceID).
+		Scan(&targetStatus, &currentClaim); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			write(w, http.StatusNotFound, response{"error": "job_target_not_found"})
+			return
+		}
+		write(w, http.StatusInternalServerError, response{"error": "job_claim_resolution_read_failed"})
+		return
+	}
+	alertStatus, resolution, reason := "", "", ""
+	err := s.db.QueryRowContext(r.Context(), `SELECT status,resolution,reason FROM job_alerts
+		WHERE job_id=? AND device_id=? AND claim_id=?`, jobID, deviceID, claimID).
+		Scan(&alertStatus, &resolution, &reason)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		write(w, http.StatusInternalServerError, response{"error": "job_claim_resolution_read_failed"})
+		return
+	}
+
+	journalAction := "retain"
+	switch {
+	case alertStatus == "resolved" && (resolution == "retry" || resolution == "mark_indeterminate"):
+		// An administrator explicitly resolved this exact claim. The audit row
+		// for that decision is the authorization for the agent to retire only
+		// this stale local journal; it is never authorization to replay it.
+		journalAction = "retire"
+	case currentClaim != claimID && (targetStatus == "queued" || targetStatus == "received"):
+		// An unstarted received delivery can be reclaimed after its receive
+		// lease expires. The agent's received/starting phase is the only phase
+		// allowed to use this response to retire a journal without an alert.
+		journalAction = "retire_if_not_started"
+	}
+	write(w, http.StatusOK, response{
+		"job_id": jobID, "device_id": deviceID, "claim_id": claimID,
+		"target_status": targetStatus, "current_claim_id": currentClaim,
+		"alert_status": alertStatus, "resolution": resolution,
+		"journal_action": journalAction, "reason": reason,
+	})
 }
 
 func (s *Server) jobResult(w http.ResponseWriter, r *http.Request) {
