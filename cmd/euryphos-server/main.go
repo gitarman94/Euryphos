@@ -684,7 +684,7 @@ func (s *Server) inventory(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusInternalServerError, response{"error": "inventory_normalization_failed"})
 		return
 	}
-	if in.Category == "system" || in.Category == "network" {
+	if in.Category == "system" {
 		if err := s.refreshDynamicMemberships(r.Context(), tx, deviceID); err != nil {
 			write(w, http.StatusInternalServerError, response{"error": "group_membership_refresh_failed"})
 			return
@@ -905,7 +905,7 @@ var groupFields = map[string]bool{
 func validGroupRules(rules []groupRule) bool {
 	if len(rules)==0 || len(rules)>20 { return false }
 	for _, rule := range rules {
-		if !groupFields[rule.Field] || rule.Value=="" { return false }
+		if !groupFields[rule.Field] || rule.Value=="" || len(rule.Value)>512 { return false }
 		switch rule.Operator { case "eq","ne","contains","starts_with","ends_with": default: return false }
 	}
 	return true
