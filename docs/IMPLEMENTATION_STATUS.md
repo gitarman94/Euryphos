@@ -45,7 +45,6 @@
 
 ## Separate endpoint-agent repository
 
-- A pre-existing public repository, `https://github.com/gitarman94/CommandPilot-Agent`, is the historical standalone client project. Its published README lists Go endpoint source plus Linux and Windows setup scripts and identifies the project as early development.
-- The repository has not been migrated or validated against the current Euryphos `/api/v1/` protocol. Its old setup scripts must not be advertised as supported Euryphos installers.
-- The endpoint code is now physically separated into its own `Euryphos-Agent` repository deliverable. The agent has no server or SQLite runtime dependency.
-- GitHub repository rename, source audit/port, installer replacement, release publishing, and server/agent end-to-end tests remain outstanding. See `docs/REPOSITORY_LAYOUT.md`.
+- The current standalone endpoint repository is `https://github.com/gitarman94/Euryphos-Agent`. It contains the independently maintained Go agent and has no server or SQLite runtime dependency.
+- The former `CommandPilot-Agent` project is historical. Its source, dependencies, installer scripts, commit history, copyright notices, and prior GPL-3.0 grant require file-level provenance review before reuse or relicensing.
+- The current agent repository is not yet production-installable. Its Linux/Windows installers, signed versioned releases, and end-to-end validation against the live Euryphos server remain outstanding. See `docs/REPOSITORY_LAYOUT.md`.
