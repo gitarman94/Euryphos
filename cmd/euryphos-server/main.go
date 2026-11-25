@@ -471,6 +471,11 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusBadRequest, response{"error": "invalid_os_family_filter"})
 		return
 	}
+	connectionFilter := strings.TrimSpace(r.URL.Query().Get("connection_state"))
+	if connectionFilter != "" && connectionFilter != "online" && connectionFilter != "offline" && connectionFilter != "never_connected" {
+		write(w, http.StatusBadRequest, response{"error": "invalid_connection_state_filter"})
+		return
+	}
 	sortField := r.URL.Query().Get("sort")
 	sortColumns := map[string]string{
 		"hostname": "hostname",
@@ -512,6 +517,25 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 	if osFamily != "" {
 		where = append(where, "os_family = ?")
 		args = append(args, osFamily)
+	}
+	switch connectionFilter {
+	case "online":
+		cutoff := time.Now().UTC().Add(-s.onlineGrace)
+		futureLimit := time.Now().UTC().Add(30 * time.Second)
+		if s.onlineGrace <= 0 {
+			cutoff = time.Now().UTC().Add(-90 * time.Second)
+		}
+		where = append(where, "last_seen IS NOT NULL AND last_seen >= ? AND last_seen <= ?")
+		args = append(args, cutoff.Format(time.RFC3339Nano), futureLimit.Format(time.RFC3339Nano))
+	case "offline":
+		grace := s.onlineGrace
+		if grace <= 0 {
+			grace = 90 * time.Second
+		}
+		where = append(where, "last_seen IS NOT NULL AND last_seen < ?")
+		args = append(args, time.Now().UTC().Add(-grace).Format(time.RFC3339Nano))
+	case "never_connected":
+		where = append(where, "(last_seen IS NULL OR last_seen = '')")
 	}
 	whereSQL := strings.Join(where, " AND ")
 	var total int
