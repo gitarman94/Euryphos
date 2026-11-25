@@ -428,7 +428,6 @@ The repository is private, so the bootstrap command must retrieve `scripts/insta
 Run as root inside Debian 13 CT:
 
 ```bash
-```bash
 set -e
 apt-get update && apt-get install -y ca-certificates curl
 read -rsp "GitHub read-only token: " GITHUB_TOKEN
@@ -443,7 +442,6 @@ curl -fsSL \
   -o "$INSTALLER"
 bash -n "$INSTALLER"
 GITHUB_TOKEN="$GITHUB_TOKEN" bash "$INSTALLER" install
-```
 ```
 
 For an upgrade, rerun the same command with final argument `upgrade`. Set `EURYPHOS_VERSION=vX.Y.Z` to pin a release. Push a `v*` tag only after CI passes; the release workflow checks source, cross-builds Linux amd64/arm64, archives the binary + systemd unit + license, and uploads `SHA256SUMS`. A published release is required for the installer.
