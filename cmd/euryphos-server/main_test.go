@@ -935,6 +935,7 @@ func TestServiceControlJobPayloadIsStrictlyTyped(t *testing.T) {
 	if !validServiceControlPayload(valid) { t.Fatal("valid service-control payload was rejected") }
 	invalid:=[][]byte{
 		[]byte(`{"service_name":"../sshd","operation":"start"}`),
+		[]byte(`{"service_name":"--help","operation":"start"}`),
 		[]byte(`{"service_name":"sshd;touch /tmp/x","operation":"start"}`),
 		[]byte(`{"service_name":"sshd","operation":"exec"}`),
 		[]byte(`{"service_name":"","operation":"stop"}`),
