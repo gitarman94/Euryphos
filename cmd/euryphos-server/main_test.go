@@ -286,6 +286,10 @@ func TestSQLiteServerAgentProtocol(t *testing.T) {
 	if !strings.Contains(string(jobStatus), `"status":"completed"`) {
 		t.Fatalf("job did not reach completed state: %s", jobStatus)
 	}
+	var jobAuditRows int
+	if err := db.QueryRow("SELECT count(*) FROM audit_log WHERE event_type='job.execution.result' AND target_id=?", jobCreated.JobID).Scan(&jobAuditRows); err != nil || jobAuditRows != 1 {
+		t.Fatalf("job result audit event missing: rows=%d error=%v", jobAuditRows, err)
+	}
 }
 
 func TestGroupsUseDirectoryAndLinuxCompatibleAttributes(t *testing.T) {
