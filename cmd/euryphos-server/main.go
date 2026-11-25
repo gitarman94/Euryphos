@@ -205,14 +205,6 @@ func migrate(ctx context.Context, db *sql.DB) error {
 			last_inventory_at TEXT,
 			created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_devices_database_id ON devices(database_id)`,
-		`UPDATE devices SET database_id = rowid WHERE database_id IS NULL`,
-		`CREATE TRIGGER IF NOT EXISTS trg_devices_database_id_insert
-			AFTER INSERT ON devices WHEN NEW.database_id IS NULL
-			BEGIN UPDATE devices SET database_id = NEW.rowid WHERE rowid = NEW.rowid; END`,
-		`CREATE INDEX IF NOT EXISTS idx_devices_serial_number ON devices(serial_number)`,
-		`CREATE INDEX IF NOT EXISTS idx_devices_smbios_uuid ON devices(smbios_uuid)`,
-		`CREATE INDEX IF NOT EXISTS idx_devices_directory_domain_ou ON devices(directory_domain, organizational_unit)`,
 		`CREATE TABLE IF NOT EXISTS device_aliases (
 			old_device_id TEXT PRIMARY KEY,
 			canonical_device_id TEXT NOT NULL REFERENCES devices(id),
@@ -369,6 +361,19 @@ func migrate(ctx context.Context, db *sql.DB) error {
 	}
 	if _, err := tx.ExecContext(ctx, "UPDATE devices SET database_id = rowid WHERE database_id IS NULL"); err != nil {
 		return err
+	}
+	for _, statement := range []string{
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_devices_database_id ON devices(database_id)`,
+		`CREATE TRIGGER IF NOT EXISTS trg_devices_database_id_insert
+			AFTER INSERT ON devices WHEN NEW.database_id IS NULL
+			BEGIN UPDATE devices SET database_id = NEW.rowid WHERE rowid = NEW.rowid; END`,
+		`CREATE INDEX IF NOT EXISTS idx_devices_serial_number ON devices(serial_number)`,
+		`CREATE INDEX IF NOT EXISTS idx_devices_smbios_uuid ON devices(smbios_uuid)`,
+		`CREATE INDEX IF NOT EXISTS idx_devices_directory_domain_ou ON devices(directory_domain, organizational_unit)`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
