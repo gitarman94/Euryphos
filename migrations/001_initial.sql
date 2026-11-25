@@ -73,6 +73,8 @@ CREATE INDEX IF NOT EXISTS idx_devices_distribution ON devices(os_family, os_dis
 CREATE INDEX IF NOT EXISTS idx_devices_directory_domain_ou ON devices(directory_domain, organizational_unit);
 CREATE INDEX IF NOT EXISTS idx_devices_serial_number ON devices(serial_number);
 CREATE INDEX IF NOT EXISTS idx_devices_smbios_uuid ON devices(smbios_uuid);
+CREATE INDEX IF NOT EXISTS idx_devices_os_family_distribution ON devices(os_family, os_distribution, os_distribution_version);
+CREATE INDEX IF NOT EXISTS idx_devices_last_seen ON devices(last_seen);
 
 CREATE TABLE IF NOT EXISTS device_duplicate_candidates (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -120,6 +122,8 @@ CREATE TABLE IF NOT EXISTS device_group_memberships (
     added_by TEXT NOT NULL DEFAULT '',
     PRIMARY KEY(group_id, device_id)
 );
+CREATE INDEX IF NOT EXISTS idx_machine_groups_type ON machine_groups(group_type);
+
 CREATE INDEX IF NOT EXISTS idx_group_memberships_device ON device_group_memberships(device_id);
 
 -- Repeating facts belong in child tables; scalar facts stay on devices.
@@ -137,6 +141,7 @@ CREATE TABLE IF NOT EXISTS device_network_interfaces (
     UNIQUE(device_id, interface_key)
 );
 CREATE INDEX IF NOT EXISTS idx_network_interfaces_device ON device_network_interfaces(device_id);
+CREATE INDEX IF NOT EXISTS idx_network_interfaces_mac ON device_network_interfaces(mac_address);
 
 CREATE TABLE IF NOT EXISTS installed_software (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
