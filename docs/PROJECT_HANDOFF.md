@@ -62,7 +62,7 @@ These decisions come from the project owner and must not be silently changed:
 - `cmd/euryphos-server/main.go` — current Go HTTP API, SQLite migration/queries, device, group, job, audit, and authentication logic. It is currently a large consolidated entry point; do not split it into many packages without a clear testability or ownership benefit.
 - `cmd/euryphos-server/ui.go` — Go-served browser console and UI assets.
 - `cmd/euryphos-server/main_test.go` — SQLite-backed server integration and regression tests.
-- `migrations/001_initial.sql` — readable SQLite schema reference. Keep it aligned with startup migration code.
+- SQLite schema creation and compatibility upgrades are defined in `migrate()` and its helpers in `cmd/euryphos-server/main.go`. This is the single canonical schema source; there is no separate SQL migration file.
 - `Dockerfile`, `docker-compose.yml` — server-only container deployment.
 - `go.mod`, `go.sum` — Go module and dependency lock.
 - `README.md` — concise repository landing page.
@@ -114,7 +114,7 @@ Backups must use SQLite's online backup API or a tested quiesced procedure. A li
 - `jobs`, `job_targets`, `job_group_targets`: parent jobs, per-device execution state, and immutable group-selection snapshots.
 - `audit_log`: initial operational events.
 - `admin_sessions`: hashed server-side browser sessions and CSRF material.
-- `schema_migrations`: schema version tracking. Current source has migration versions through **12**.
+- `schema_migrations`: startup schema marker table. The current Go migrator applies an idempotent create/ensure schema routine and records markers through version **12**; it is not yet a sequence of independently executed per-version migration functions. The next database-engineering task is to make schema changes explicit, ordered Go migrations (or consciously retain a single idempotent reconciler) without maintaining a second SQL copy.
 
 JSON is retained for extensible provider payloads, not as a substitute for typed columns on frequently queried facts. Never create columns from arbitrary client-supplied field names. Timestamps are stored in UTC. Child-table replacement must respect collection status: unsupported, unavailable, failed, or permission-denied collection must not erase last-known good records.
 
