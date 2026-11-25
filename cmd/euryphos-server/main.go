@@ -283,6 +283,9 @@ func migrate(ctx context.Context, db *sql.DB) error {
 			connection_type TEXT NOT NULL DEFAULT '',
 			state TEXT NOT NULL DEFAULT '',
 			addresses_json TEXT NOT NULL DEFAULT '[]',
+			dhcp_enabled INTEGER NOT NULL DEFAULT 0,
+			dhcp_server TEXT NOT NULL DEFAULT '',
+			dhcp_lease_expires TEXT NOT NULL DEFAULT '',
 			mtu INTEGER,
 			observed_at TEXT NOT NULL,
 			UNIQUE(device_id, interface_key)
@@ -365,6 +368,7 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (5)`,
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (6)`,
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (7)`,
+		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (8)`,
 	}
 	for _, statement := range statements {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
@@ -422,6 +426,18 @@ func migrate(ctx context.Context, db *sql.DB) error {
 			return err
 		}
 	}
+	for _, column := range []struct {
+		name string
+		definition string
+	}{
+		{name: "dhcp_enabled", definition: "INTEGER NOT NULL DEFAULT 0"},
+		{name: "dhcp_server", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "dhcp_lease_expires", definition: "TEXT NOT NULL DEFAULT ''"},
+	} {
+		if err := ensureTableColumn(ctx, tx, "device_network_interfaces", column.name, column.definition); err != nil {
+			return err
+		}
+	}
 	if _, err := tx.ExecContext(ctx, "UPDATE devices SET database_id = rowid WHERE database_id IS NULL"); err != nil {
 		return err
 	}
@@ -452,7 +468,14 @@ func migrate(ctx context.Context, db *sql.DB) error {
 }
 
 func ensureDeviceColumn(ctx context.Context, tx *sql.Tx, columnName, definition string) error {
-	rows, err := tx.QueryContext(ctx, "PRAGMA table_info(devices)")
+	return ensureTableColumn(ctx, tx, "devices", columnName, definition)
+}
+
+func ensureTableColumn(ctx context.Context, tx *sql.Tx, tableName, columnName, definition string) error {
+	if tableName != "devices" && tableName != "device_network_interfaces" {
+		return errors.New("unsupported migration table")
+	}
+	rows, err := tx.QueryContext(ctx, "PRAGMA table_info("+tableName+")")
 	if err != nil { return err }
 	found := false
 	for rows.Next() {
@@ -465,7 +488,7 @@ func ensureDeviceColumn(ctx context.Context, tx *sql.Tx, columnName, definition 
 	if err := rows.Err(); err != nil { rows.Close(); return err }
 	if err := rows.Close(); err != nil { return err }
 	if found { return nil }
-	_, err = tx.ExecContext(ctx, "ALTER TABLE devices ADD COLUMN "+columnName+" "+definition)
+	_, err = tx.ExecContext(ctx, "ALTER TABLE "+tableName+" ADD COLUMN "+columnName+" "+definition)
 	return err
 }
 
@@ -1051,6 +1074,20 @@ func (s *Server) applySystemInventory(ctx context.Context, tx *sql.Tx, deviceID 
 	return nil
 }
 
+func boolInt(value any) int {
+	switch v := value.(type) {
+	case bool:
+		if v { return 1 }
+	case string:
+		if strings.EqualFold(strings.TrimSpace(v), "true") || strings.EqualFold(strings.TrimSpace(v), "enabled") { return 1 }
+	case float64:
+		if v != 0 { return 1 }
+	case int:
+		if v != 0 { return 1 }
+	}
+	return 0
+}
+
 func (s *Server) applyNetworkInventory(ctx context.Context, tx *sql.Tx, deviceID string, payload []byte, observedAt string) error {
 	var data map[string]any
 	if err := json.Unmarshal(payload, &data); err != nil { return err }
@@ -1058,6 +1095,15 @@ func (s *Server) applyNetworkInventory(ctx context.Context, tx *sql.Tx, deviceID
 	dns := string(dnsRaw)
 	if data["dns_servers"] == nil { dns = "[]" }
 	if _, err := tx.ExecContext(ctx, "DELETE FROM device_network_interfaces WHERE device_id=?", deviceID); err != nil { return err }
+	dhcpByName := map[string]map[string]any{}
+	dhcpByIndex := map[string]map[string]any{}
+	if dhcpRows, ok := data["dhcp_interfaces"].([]any); ok {
+		for _, raw := range dhcpRows {
+			item := mapValue(raw)
+			if name := textValue(item["name"]); name != "" { dhcpByName[name] = item }
+			if index := textValue(item["interface_index"]); index != "" { dhcpByIndex[index] = item }
+		}
+	}
 	interfaces, _ := data["interfaces"].([]any)
 	localIP, macAddress, connectionType := "", "", ""
 	for index, raw := range interfaces {
@@ -1066,13 +1112,23 @@ func (s *Server) applyNetworkInventory(ctx context.Context, tx *sql.Tx, deviceID
 		key := textValue(item["index"])
 		if key == "" { key = name }
 		if key == "" { key = strconv.Itoa(index) }
+		dhcp := dhcpByName[name]
+		if dhcp == nil { dhcp = dhcpByIndex[key] }
+		dhcpEnabled, dhcpServer, dhcpLease := 0, "", ""
+		if dhcp != nil {
+			dhcpEnabled = boolInt(dhcp["dhcp_enabled"])
+			dhcpServer = textValue(dhcp["dhcp_server"])
+			dhcpLease = textValue(dhcp["dhcp_lease_expires"])
+		}
 		addresses := item["addresses"]
 		addressJSON, _ := json.Marshal(addresses)
 		mtu := integerValue(item["mtu"])
 		if _, err := tx.ExecContext(ctx, `INSERT INTO device_network_interfaces(
-			device_id,interface_key,name,mac_address,connection_type,state,addresses_json,mtu,observed_at
-		) VALUES (?,?,?,?,?,?,?,?,?)`, deviceID,key,name,textValue(item["mac_address"]),
-			textValue(item["connection_type"]),textValue(item["status"]),string(addressJSON),mtu,observedAt); err != nil { return err }
+			device_id,interface_key,name,mac_address,connection_type,state,addresses_json,
+			dhcp_enabled,dhcp_server,dhcp_lease_expires,mtu,observed_at
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, deviceID,key,name,textValue(item["mac_address"]),
+			textValue(item["connection_type"]),textValue(item["status"]),string(addressJSON),
+			dhcpEnabled,dhcpServer,dhcpLease,mtu,observedAt); err != nil { return err }
 		if macAddress == "" && textValue(item["mac_address"]) != "" { macAddress = textValue(item["mac_address"]) }
 		if connectionType == "" && textValue(item["status"]) == "up" { connectionType = textValue(item["connection_type"]) }
 		if localIP == "" {
