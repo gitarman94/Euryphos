@@ -600,6 +600,40 @@ func TestBrowserSessionRequiresCSRFAndSupportsConsole(t *testing.T) {
 	}
 }
 
+func TestStaticGroupMembershipAddAndRemove(t *testing.T) {
+	db, err := openDatabase(filepath.Join(t.TempDir(), "static-groups.db"))
+	if err != nil { t.Fatal(err) }
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := migrate(ctx, db); err != nil { t.Fatal(err) }
+	_, err = db.Exec(`INSERT INTO devices(id,hostname,os_family,status) VALUES
+		('device-a','workstation-a','windows','approved'),
+		('device-b','workstation-b','linux','approved')`)
+	if err != nil { t.Fatal(err) }
+	handler := securityHeaders(routes(&Server{db:db,adminToken:"admin-test-token"}))
+	raw := performRequest(t, handler, http.MethodPost, "/api/v1/groups", "admin-test-token",
+		`{"name":"Manually Selected","group_type":"static"}`, http.StatusCreated)
+	var group struct { ID int64 `json:"id"` }
+	if err := json.Unmarshal(raw, &group); err != nil || group.ID < 1 { t.Fatalf("invalid group response: %s (%v)",raw,err) }
+	path := "/api/v1/groups/"+strconv.FormatInt(group.ID,10)
+	performRequest(t, handler, http.MethodPost, path+"/members", "admin-test-token",
+		`{"device_ids":["device-a","device-b","device-a"]}`, http.StatusOK)
+	members := performRequest(t, handler, http.MethodGet, path+"/members", "admin-test-token", "", http.StatusOK)
+	if !strings.Contains(string(members),"device-a") || !strings.Contains(string(members),"device-b") || strings.Count(string(members),`"id":`) != 2 {
+		t.Fatalf("static group membership add/dedup failed: %s",members)
+	}
+	performRequest(t, handler, http.MethodDelete, path+"/members/device-a", "admin-test-token", "", http.StatusOK)
+	members = performRequest(t, handler, http.MethodGet, path+"/members", "admin-test-token", "", http.StatusOK)
+	if strings.Contains(string(members),"device-a") || !strings.Contains(string(members),"device-b") {
+		t.Fatalf("static group member removal failed: %s",members)
+	}
+	var added, removed int
+	if err := db.QueryRow("SELECT count(*) FROM audit_log WHERE event_type='group.members.added'").Scan(&added); err != nil { t.Fatal(err) }
+	if err := db.QueryRow("SELECT count(*) FROM audit_log WHERE event_type='group.member.removed'").Scan(&removed); err != nil { t.Fatal(err) }
+	if added != 1 || removed != 1 { t.Fatalf("static membership audit missing: added=%d removed=%d",added,removed) }
+}
+
 func performRequest(t *testing.T, handler http.Handler, method, path, token, body string, expectedStatus int) []byte {
 	t.Helper()
 	var requestBody *bytes.Reader
