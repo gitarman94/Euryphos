@@ -35,7 +35,7 @@ The previous `CommandPilot-Agent` repository is the historical client project. I
 
 ```mermaid
 flowchart LR
-    Admin[IT administrator] --> UI[Operator console - planned]
+    Admin[IT administrator] --> UI[Go-served operator console]
     UI --> API[Euryphos server / API - Go]
     Agent[Euryphos-Agent - separate project] <-->|Authenticated HTTPS/API traffic| API
     API --> DB[(SQLite database)]
@@ -62,14 +62,14 @@ This repository currently includes:
 - Initial `audit_log` events for authentication outcomes, enrollment/approval/revocation, group changes, job actions/results, and duplicate merges.
 - Static and rule-based dynamic machine groups using normalized Windows AD and Linux directory attributes, with group create/edit/delete and explicit membership management.
 - Jobs can target explicit devices and/or groups. Group membership is expanded into a fixed approved-device target list at job creation; group IDs/names are retained in job history even if groups are later edited or deleted.
-- Initial browser console at `/login` and `/console`: overview, searchable/paginated Devices list, device approval/revocation, device details and inventory history, duplicate review/merge, Groups with static membership controls, Jobs with per-device outcomes, and Audit log. The console is served by the Go server; no separate frontend runtime is required.
+- Initial browser console at `/login` and `/console`: overview, searchable/paginated Devices list, device approval/revocation, device details and inventory history, duplicate review/merge, Groups with editing and static membership controls, Jobs with per-device outcomes, and Audit log. The console is served by the Go server; no separate frontend runtime is required.
 - Browser sign-in exchanges the configured administrator bearer token for an eight-hour server-side session. The session cookie is HttpOnly and SameSite Strict; session-authenticated state-changing requests require a CSRF token. `EURYPHOS_COOKIE_SECURE` defaults to `true`; set it to `false` only for trusted local HTTP testing. Use HTTPS for remote access.
 - Agent job polling and result reporting endpoints.
 - Docker Compose deployment with a persistent SQLite volume.
 
 ### Not implemented or not production-ready
 
-- **Browser console is an initial implementation, not a finished enterprise UI.** It covers the main overview, Devices, device details, Groups, and Audit log views. Responsive polish, complete device field presentation, advanced group editing/member administration, fleet metrics/charts, live job monitoring, and richer navigation remain outstanding.
+- **Browser console is an initial implementation, not a finished enterprise UI.** It covers the main overview, Devices, device details, Groups, and Audit log views. Responsive polish, complete device field presentation, visual multi-condition rule builder, bulk member selection, fleet metrics/charts, live job monitoring, and richer navigation remain outstanding.
 - Administrator APIs provide `GET /api/v1/devices/{id}` for current device identity/latest inventory and `GET /api/v1/devices/{id}/inventory/history` for bounded, cursor-paginated inventory snapshots. The Devices-list API also supports basic search across hostname/FQDN/OS/directory fields, status/OS/directory filters, allowlisted sorting, and bounded pagination. Connection presence is derived server-side from the most recent authenticated heartbeat, with a 90-second default online grace period configurable through `EURYPHOS_ONLINE_GRACE_SECONDS` (allowed range 15–3600 seconds). First/last connection timestamps are returned separately from enrollment status, and the Devices list can filter by `connection_state=online|offline|never_connected`. Full telemetry field coverage, activity types, freshness indicators, fleet-wide trend aggregation, and advanced browser workflows remain incomplete.
 - Full hardware, service, security, and configuration inventory providers; current normalized columns represent the initial subset and are not the complete telemetry specification.
 - Functional patch installation, software deployment/removal, configuration enforcement, and most privileged job executors.
