@@ -1047,6 +1047,8 @@ func TestServiceControlJobPayloadIsStrictlyTyped(t *testing.T) {
 	invalid:=[][]byte{
 		[]byte(`{"service_name":"../sshd","operation":"start"}`),
 		[]byte(`{"service_name":"--help","operation":"start"}`),
+		[]byte(`{"service_name":"systemctl","operation":"start"}`),
+		[]byte(`{"service_name":"SYSTEMCTL","operation":"start"}`),
 		[]byte(`{"service_name":"sshd;touch /tmp/x","operation":"start"}`),
 		[]byte(`{"service_name":"sshd","operation":"exec"}`),
 		[]byte(`{"service_name":"","operation":"stop"}`),
