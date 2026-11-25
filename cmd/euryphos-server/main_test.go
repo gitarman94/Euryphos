@@ -571,6 +571,10 @@ func TestJobAlertRetryRejectsNonIdempotentActions(t *testing.T) {
 	if err := db.QueryRowContext(ctx, "SELECT status FROM job_targets WHERE job_id=? AND device_id=?", jobID, deviceID).Scan(&status); err != nil || status != "running" {
 		t.Fatalf("blocked retry changed target state: status=%q err=%v", status, err)
 	}
+	var rejectedAudit int
+	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM audit_log WHERE event_type='job.target.retry_rejected' AND target_id=?", jobID+"/"+deviceID).Scan(&rejectedAudit); err != nil || rejectedAudit != 1 {
+		t.Fatalf("blocked non-idempotent retry audit missing: rows=%d err=%v", rejectedAudit, err)
+	}
 }
 
 func TestSafeJobRetryClassification(t *testing.T) {
