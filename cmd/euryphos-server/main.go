@@ -343,6 +343,7 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (2)`,
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (3)`,
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (4)`,
+		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (5)`,
 	}
 	for _, statement := range statements {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
