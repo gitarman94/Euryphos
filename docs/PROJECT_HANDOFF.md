@@ -220,24 +220,23 @@ Keep `Euryphos-Agent/docs/PROJECT_HANDOFF.md` synchronized with actual handler b
 
 ### Server CI
 
-GitHub Actions run **[45619383331](https://github.com/gitarman94/Euryphos/actions/runs/45619383331)** on the current server main HEAD `1ba56cbd4487236bd27ac8011ca6b387c72369af` completed successfully on 2026-11-25. It passed:
+GitHub Actions run **[45624241692](https://github.com/gitarman94/Euryphos/actions/runs/45624241692)** on server main HEAD `cfeec4a86490e3b11f86de0d547fec8edb359646` completed successfully on 2026-11-25. It passed:
 
 - `go mod tidy`
 - `go test ./...`
 - `go vet ./...`
+- `bash -n scripts/install.sh`
 - `go build -trimpath ./cmd/euryphos-server`
 
-This run includes the job receive-lease recovery, dispatch of queued fleet targets while a job is running, the recovery index/schema version 12, case-insensitive rejection of the reserved service name `systemctl`, and the corresponding SQLite/API regression tests. The validation job's test, vet, and build steps all completed successfully.
+This includes graceful SIGINT/SIGTERM HTTP shutdown, SQLite close, Debian installer syntax, and the existing SQLite/API regression suite. It does not execute the installer inside Debian 13 or test an actual GitHub release.
 
-Current server main HEAD at this handoff update: `1ba56cbd4487236bd27ac8011ca6b387c72369af`. This validates the current Go/SQLite test/build path, but does not prove real endpoint execution, production deployment, or safe exactly-once behavior.
+### Agent CI
 
-### Agent CI dependency
-
-Agent run **45614617941** failed in `go test ./...` at `TestValidateServiceControlAllowsOnlyTypedOperations`: the test expected the name `systemctl` to be rejected, but the validator accepted it. The source was fixed to reject that reserved name case-insensitively; the agent test now also covers uppercase/mixed-case forms. No passing follow-up run has been confirmed. See the companion agent handoff for exact commits and prior passing build scope.
+GitHub Actions run **[45619870545](https://github.com/gitarman94/Euryphos-Agent/actions/runs/45619870545)** on agent commit `56f4271bfca4136ca464e8c7d0c706ed1b42293c` completed successfully on 2026-11-25. It passed agent tests, vet, Linux build, Windows cross-build, and macOS cross-build. These cross-builds do not certify runtime support on those systems.
 
 ### What has not been demonstrated
 
-No real running server + installed agent end-to-end test has been completed. No actual Linux or Windows service operation has been runtime-tested. Cross-compilation does not certify runtime compatibility. No production Debian 13 Proxmox install, signed release, client installer, fleet load benchmark, SQLite backup/restore drill, penetration test, or supported-OS certification has been completed.
+No real running server + installed agent end-to-end test has been completed. No actual Linux or Windows service operation has been runtime-tested. Cross-compilation does not certify runtime compatibility. No first tagged GitHub server release has been published, and no fresh install, in-place upgrade, failed-upgrade rollback, reboot, or database restore has been tested in a Debian 13 Proxmox CT. Cryptographic release signing/provenance, fleet load benchmarks, penetration testing, and supported-OS certification remain incomplete.
 
 When writing status, distinguish:
 - source code exists;
@@ -430,15 +429,19 @@ Run as root inside Debian 13 CT:
 
 ```bash
 apt-get update && apt-get install -y ca-certificates curl
+apt-get update && apt-get install -y ca-certificates curl
 read -rsp "GitHub read-only token: " GITHUB_TOKEN
-printf '\n'
+printf '\\n'
 export GITHUB_TOKEN
-curl -fsSL \
-  -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-  -H "Accept: application/vnd.github.raw" \
-  "https://api.github.com/repos/gitarman94/Euryphos/contents/scripts/install.sh?ref=main" \
-  | GITHUB_TOKEN="${GITHUB_TOKEN}" bash -s -- install
-unset GITHUB_TOKEN
+INSTALLER="$(mktemp)"
+trap 'rm -f "$INSTALLER"; unset GITHUB_TOKEN' EXIT
+curl -fsSL \\
+  -H "Authorization: Bearer ${GITHUB_TOKEN}" \\
+  -H "Accept: application/vnd.github.raw" \\
+  "https://api.github.com/repos/gitarman94/Euryphos/contents/scripts/install.sh?ref=main" \\
+  -o "$INSTALLER"
+bash -n "$INSTALLER"
+GITHUB_TOKEN="$GITHUB_TOKEN" bash "$INSTALLER" install
 ```
 
 For an upgrade, rerun the same command with final argument `upgrade`. Set `EURYPHOS_VERSION=vX.Y.Z` to pin a release. Push a `v*` tag only after CI passes; the release workflow checks source, cross-builds Linux amd64/arm64, archives the binary + systemd unit + license, and uploads `SHA256SUMS`. A published release is required for the installer.
