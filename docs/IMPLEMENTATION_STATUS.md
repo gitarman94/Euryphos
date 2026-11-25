@@ -39,7 +39,7 @@
 
 - Server CI run [45601625143](https://github.com/gitarman94/Euryphos/actions/runs/45601625143), commit `bf98a199fd38b154d651c87c25a28819d0f17dc5`, passed `go test ./...`, `go vet ./...`, and `go build -trimpath ./cmd/euryphos-server`.
 - Server integration tests cover legacy SQLite schema upgrades, device detail/history, list filters/presence, normalized directory-based grouping, duplicate candidate review/merge, old-agent-token continuity, and authentication audit events. The most recent merge-field and inventory-history refinements still require a fresh CI run.
-- A passing CI build does not certify production deployment, scale, backup/restore, reverse-proxy behavior, or full end-to-end operation with installed endpoints.
+- A passing CI build does not certify production deployment, scale, backup/restore, reverse-proxy behavior, metrics time-series retention, or full end-to-end operation with installed endpoints.
 
 ## Separate endpoint-agent repository
 
@@ -109,7 +109,7 @@ Implemented in the server's existing Go entry point and SQLite migration path:
 - One `devices` row per computer. `database_id` is a unique SQLite-generated integer; `id` remains the agent-facing UUID to preserve existing endpoint credentials and API compatibility.
 - Typed scalar columns for hostname/FQDN, OS family/version/distribution/build/architecture, directory type/domain/OU/site, manufacturer/model/serial/SMBIOS UUID/chassis, CPU, memory, BIOS, boot/uptime, root filesystem, timezone, agent version, and network summary.
 - Repeating network interfaces and installed software are stored in indexed child tables, not serialized as a single device column. Current category JSON remains for flexible provider data and is separately indexed by device/category.
-- Inventory history stores category snapshots only when payloads change. An unchanged scheduled network/software scan refreshes freshness without deleting and recreating normalized child rows.
+- Inventory history stores change-relevant snapshots. System history fingerprints ignore volatile uptime, free/available memory and disk readings, and battery charge/status; current typed values still refresh on each scan. Unchanged network/software scans refresh freshness without deleting and recreating normalized child rows. This change history is not a metrics time-series store.
 - Duplicate candidates are detected using SMBIOS UUID or serial + manufacturer + model. No automatic merge occurs. Administrators review candidates and explicitly merge; the source record remains as a merged alias so its current agent token can continue operating against the canonical record.
 - Static groups support explicit membership. Dynamic groups support `all`/`any` matching with `eq`, `ne`, `contains`, `starts_with`, and `ends_with` against allowlisted typed fields. Rules compile to parameterized SQLite predicates; membership changes are materialized in `device_group_memberships`.
 - Directory fields are normalized across platforms: Windows provider reports AD domain and OU where domain services are available; Linux provider reads SSSD/realmd configuration and reports AD/LDAP domain and OU context where exposed.
