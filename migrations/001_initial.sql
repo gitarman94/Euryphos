@@ -26,6 +26,20 @@ CREATE TABLE IF NOT EXISTS device_inventory (
     PRIMARY KEY(device_id, category)
 );
 
+CREATE TABLE IF NOT EXISTS device_inventory_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    category TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    received_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_inventory_history_device_category_id
+    ON device_inventory_history(device_id, category, id DESC);
+CREATE INDEX IF NOT EXISTS idx_inventory_history_device_received
+    ON device_inventory_history(device_id, received_at DESC);
+
 CREATE TABLE IF NOT EXISTS jobs (
     id TEXT PRIMARY KEY,
     action TEXT NOT NULL,
@@ -51,3 +65,4 @@ CREATE INDEX IF NOT EXISTS idx_job_targets_device_status ON job_targets(device_i
 CREATE INDEX IF NOT EXISTS idx_jobs_status_created ON jobs(status, created_at);
 
 INSERT OR IGNORE INTO schema_migrations(version) VALUES (1);
+INSERT OR IGNORE INTO schema_migrations(version) VALUES (2);
