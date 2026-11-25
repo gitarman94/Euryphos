@@ -1001,9 +1001,15 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 	}
 	sortField := r.URL.Query().Get("sort")
 	sortColumns := map[string]string{
+		"database_id": "database_id",
 		"hostname": "hostname",
 		"os_family": "os_family",
 		"os_version": "os_version",
+		"os_distribution": "os_distribution",
+		"directory_domain": "directory_domain",
+		"organizational_unit": "organizational_unit",
+		"manufacturer": "manufacturer",
+		"model": "model",
 		"status": "status",
 		"last_seen": "last_seen",
 		"created_at": "created_at",
@@ -1025,13 +1031,13 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	where := []string{"1 = 1"}
+	where := []string{"merged_into IS NULL"}
 	args := []any{}
 	if search != "" {
 		escaped := strings.NewReplacer("\\", "\\\\", "%", "\\%", "_", "\\_").Replace(search)
 		pattern := "%" + escaped + "%"
-		where = append(where, "(hostname LIKE ? ESCAPE '\\' OR os_family LIKE ? ESCAPE '\\' OR os_version LIKE ? ESCAPE '\\')")
-		args = append(args, pattern, pattern, pattern)
+		where = append(where, "(hostname LIKE ? ESCAPE '\\' OR fqdn LIKE ? ESCAPE '\\' OR os_family LIKE ? ESCAPE '\\' OR os_version LIKE ? ESCAPE '\\' OR os_distribution LIKE ? ESCAPE '\\' OR directory_domain LIKE ? ESCAPE '\\' OR organizational_unit LIKE ? ESCAPE '\\')")
+		args = append(args, pattern, pattern, pattern, pattern, pattern, pattern, pattern)
 	}
 	if status != "" {
 		where = append(where, "status = ?")
@@ -1040,6 +1046,21 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 	if osFamily != "" {
 		where = append(where, "os_family = ?")
 		args = append(args, osFamily)
+	}
+	for _, filter := range []struct{ query, column string; max int }{
+		{"os_distribution","os_distribution",80},
+		{"directory_domain","directory_domain",255},
+		{"organizational_unit","organizational_unit",512},
+	} {
+		value := strings.TrimSpace(r.URL.Query().Get(filter.query))
+		if len(value) > filter.max {
+			write(w, http.StatusBadRequest, response{"error": "invalid_" + filter.query + "_filter"})
+			return
+		}
+		if value != "" {
+			where = append(where, filter.column + " = ?")
+			args = append(args, value)
+		}
 	}
 	switch connectionFilter {
 	case "online":
@@ -1068,8 +1089,8 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 	}
 	offset := (page - 1) * pageSize
 	queryArgs := append(append([]any{}, args...), pageSize, offset)
-	query := "SELECT id, hostname, os_family, os_version, status, last_seen, first_connected_at, last_connected_at FROM devices WHERE " +
-		whereSQL + " ORDER BY " + sortColumn + " " + sortDirection + ", id ASC LIMIT ? OFFSET ?"
+	query := "SELECT database_id,id,hostname,os_family,os_version,os_distribution,directory_type,directory_domain,organizational_unit,manufacturer,model,status,last_seen,first_connected_at,last_connected_at FROM devices WHERE " +
+		whereSQL + " ORDER BY " + sortColumn + " " + sortDirection + ", database_id ASC LIMIT ? OFFSET ?"
 	rows, err := s.db.QueryContext(r.Context(), query, queryArgs...)
 	if err != nil {
 		write(w, http.StatusInternalServerError, response{"error": "database_error"})
@@ -1078,15 +1099,18 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	items := []map[string]any{}
 	for rows.Next() {
-		var id, hostname, osFamilyValue, osVersion, deviceStatus string
+		var databaseID sql.NullInt64
+		var id, hostname, osFamilyValue, osVersion, distribution, directoryType, directoryDomain, organizationalUnit, manufacturer, model, deviceStatus string
 		var lastSeen, firstConnected, lastConnected sql.NullString
-		if err := rows.Scan(&id, &hostname, &osFamilyValue, &osVersion, &deviceStatus, &lastSeen, &firstConnected, &lastConnected); err != nil {
+		if err := rows.Scan(&databaseID,&id,&hostname,&osFamilyValue,&osVersion,&distribution,&directoryType,&directoryDomain,&organizationalUnit,&manufacturer,&model,&deviceStatus,&lastSeen,&firstConnected,&lastConnected); err != nil {
 			write(w, http.StatusInternalServerError, response{"error": "database_error"})
 			return
 		}
 		items = append(items, map[string]any{
-			"id": id, "hostname": hostname, "os_family": osFamilyValue, "os_version": osVersion,
-			"status": deviceStatus, "last_seen": lastSeen.String,
+			"database_id": databaseID.Int64, "id": id, "hostname": hostname, "os_family": osFamilyValue,
+			"os_version": osVersion, "os_distribution": distribution, "directory_type": directoryType,
+			"directory_domain": directoryDomain, "organizational_unit": organizationalUnit,
+			"manufacturer": manufacturer, "model": model, "status": deviceStatus, "last_seen": lastSeen.String,
 			"first_connected_at": firstConnected.String, "last_connected_at": lastConnected.String,
 			"connection_state": s.connectionState(lastSeen),
 		})
