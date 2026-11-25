@@ -911,57 +911,65 @@ func validGroupRules(rules []groupRule) bool {
 	return true
 }
 
-func ruleMatches(fields map[string]string, rule groupRule) bool {
-	actual := strings.ToLower(fields[rule.Field])
-	expected := strings.ToLower(rule.Value)
-	switch rule.Operator {
-	case "eq": return actual==expected
-	case "ne": return actual!=expected
-	case "contains": return strings.Contains(actual,expected)
-	case "starts_with": return strings.HasPrefix(actual,expected)
-	case "ends_with": return strings.HasSuffix(actual,expected)
-	default: return false
+func compileGroupRules(operator string, rules []groupRule) (string, []any, error) {
+	if (operator!="all" && operator!="any") || !validGroupRules(rules) {
+		return "",nil,errors.New("invalid dynamic group rules")
 	}
+	joiner:=" AND "
+	if operator=="any" { joiner=" OR " }
+	parts:=make([]string,0,len(rules))
+	args:=[]any{}
+	for _,rule:=range rules {
+		column:=rule.Field
+		switch rule.Operator {
+		case "eq": parts=append(parts,"lower("+column+")=lower(?)");args=append(args,rule.Value)
+		case "ne": parts=append(parts,"lower("+column+")<>lower(?)");args=append(args,rule.Value)
+		case "contains": parts=append(parts,"instr(lower("+column+"),lower(?))>0");args=append(args,rule.Value)
+		case "starts_with": parts=append(parts,"substr(lower("+column+"),1,length(?))=lower(?)");args=append(args,rule.Value,rule.Value)
+		case "ends_with": parts=append(parts,"substr(lower("+column+"),-length(?))=lower(?)");args=append(args,rule.Value,rule.Value)
+		default: return "",nil,errors.New("unsupported group rule operator")
+		}
+	}
+	return "("+strings.Join(parts,joiner)+")",args,nil
+}
+
+func (s *Server) refreshOneDynamicMembership(ctx context.Context, tx *sql.Tx, groupID int64, operator string, rules []groupRule, deviceID string) error {
+	where,args,err:=compileGroupRules(operator,rules)
+	if err!=nil { return err }
+	insertArgs:=append([]any{groupID,deviceID},args...)
+	_,err=tx.ExecContext(ctx,"INSERT OR IGNORE INTO device_group_memberships(group_id,device_id,added_by) "+
+		"SELECT ?,id,'dynamic' FROM devices WHERE merged_into IS NULL AND id=? AND "+where,insertArgs...)
+	if err!=nil { return err }
+	deleteArgs:=append([]any{groupID,deviceID},args...)
+	_,err=tx.ExecContext(ctx,"DELETE FROM device_group_memberships WHERE group_id=? AND device_id=? AND NOT ("+where+")",deleteArgs...)
+	return err
+}
+
+func (s *Server) refreshAllDynamicMemberships(ctx context.Context, tx *sql.Tx, groupID int64, operator string, rules []groupRule) error {
+	where,args,err:=compileGroupRules(operator,rules)
+	if err!=nil { return err }
+	insertArgs:=append([]any{groupID},args...)
+	_,err=tx.ExecContext(ctx,"INSERT OR IGNORE INTO device_group_memberships(group_id,device_id,added_by) "+
+		"SELECT ?,id,'dynamic' FROM devices WHERE merged_into IS NULL AND "+where,insertArgs...)
+	return err
 }
 
 func (s *Server) refreshDynamicMemberships(ctx context.Context, tx *sql.Tx, deviceID string) error {
-	rows, err := tx.QueryContext(ctx, "SELECT id,match_operator,rules_json FROM machine_groups WHERE group_type='dynamic'")
-	if err != nil { return err }
+	rows,err:=tx.QueryContext(ctx,"SELECT id,match_operator,rules_json FROM machine_groups WHERE group_type='dynamic'")
+	if err!=nil { return err }
 	type group struct { id int64; operator string; rules []groupRule }
-	groups := []group{}
+	groups:=[]group{}
 	for rows.Next() {
-		var item group; var raw string
-		if err := rows.Scan(&item.id,&item.operator,&raw); err != nil { rows.Close(); return err }
-		if err := json.Unmarshal([]byte(raw),&item.rules); err != nil { rows.Close(); return err }
+		var item group
+		var raw string
+		if err:=rows.Scan(&item.id,&item.operator,&raw);err!=nil { rows.Close();return err }
+		if err:=json.Unmarshal([]byte(raw),&item.rules);err!=nil { rows.Close();return err }
 		groups=append(groups,item)
 	}
-	if err := rows.Err(); err != nil { rows.Close(); return err }
-	if err := rows.Close(); err != nil { return err }
-	fields := map[string]string{}
-	fieldNames := make([]string,0,len(groupFields))
-	for name := range groupFields { fieldNames=append(fieldNames,name) }
-	sort.Strings(fieldNames)
-	columns := strings.Join(fieldNames,",")
-	values := make([]any,len(fieldNames))
-	scan := make([]any,len(fieldNames))
-	for i := range values { scan[i]=&values[i] }
-	if err := tx.QueryRowContext(ctx,"SELECT "+columns+" FROM devices WHERE id=?",deviceID).Scan(scan...); err != nil { return err }
-	for i,name := range fieldNames {
-		if values[i]!=nil { fields[name]=fmt.Sprint(values[i]) }
-	}
-	for _, item := range groups {
-		matched := item.operator=="all"
-		for _, rule := range item.rules {
-			result := ruleMatches(fields,rule)
-			if item.operator=="all" && !result { matched=false; break }
-			if item.operator=="any" && result { matched=true; break }
-		}
-		if matched {
-			_,err=tx.ExecContext(ctx,"INSERT OR IGNORE INTO device_group_memberships(group_id,device_id,added_by) VALUES (?,?,?)",item.id,deviceID,"dynamic")
-		} else {
-			_,err=tx.ExecContext(ctx,"DELETE FROM device_group_memberships WHERE group_id=? AND device_id=?",item.id,deviceID)
-		}
-		if err!=nil { return err }
+	if err:=rows.Err();err!=nil { rows.Close();return err }
+	if err:=rows.Close();err!=nil { return err }
+	for _,item:=range groups {
+		if err:=s.refreshOneDynamicMembership(ctx,tx,item.id,item.operator,item.rules,deviceID);err!=nil { return err }
 	}
 	return nil
 }
@@ -1375,13 +1383,9 @@ func (s *Server) createGroup(w http.ResponseWriter, r *http.Request) {
 	id,err:=result.LastInsertId()
 	if err!=nil { write(w,http.StatusInternalServerError,response{"error":"group_create_failed"});return }
 	if in.Type=="dynamic" {
-		rows,err:=tx.QueryContext(r.Context(),"SELECT id FROM devices WHERE merged_into IS NULL")
-		if err!=nil { write(w,http.StatusInternalServerError,response{"error":"group_member_refresh_failed"});return }
-		deviceIDs:=[]string{}
-		for rows.Next() { var deviceID string; if err:=rows.Scan(&deviceID);err!=nil { rows.Close();write(w,http.StatusInternalServerError,response{"error":"group_member_refresh_failed"});return };deviceIDs=append(deviceIDs,deviceID) }
-		if err:=rows.Err();err!=nil { rows.Close();write(w,http.StatusInternalServerError,response{"error":"group_member_refresh_failed"});return }
-		rows.Close()
-		for _,deviceID:=range deviceIDs { if err:=s.refreshDynamicMemberships(r.Context(),tx,deviceID);err!=nil { write(w,http.StatusInternalServerError,response{"error":"group_member_refresh_failed"});return } }
+		if err:=s.refreshAllDynamicMemberships(r.Context(),tx,id,in.Operator,in.Rules);err!=nil {
+			write(w,http.StatusInternalServerError,response{"error":"group_member_refresh_failed"});return
+		}
 	}
 	if err:=auditEvent(r.Context(),tx,r,"admin","configured-admin","group.created","success","group",strconv.FormatInt(id,10),map[string]any{"name":in.Name,"group_type":in.Type,"rules":in.Rules});err!=nil {
 		write(w,http.StatusInternalServerError,response{"error":"audit_write_failed"});return
