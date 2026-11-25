@@ -57,7 +57,7 @@ The agent currently collects and uploads five inventory categories:
 
 | Category | Current collection |
 | --- | --- |
-| **System** | OS and host identity, hardware/BIOS, CPU model and core counts, total/available memory, uptime, root-volume capacity, timezone, and selected platform facts |
+| **System** | OS and host identity, hardware/BIOS, CPU model and core counts, memory facts where exposed, uptime where exposed, root-volume capacity, timezone, and selected platform facts |
 | **Network** | Interfaces, addresses, MAC addresses, DNS, gateway, and available DHCP details |
 | **Storage** | Physical disks and mounted volumes, capacity, free space, model/serial data where available |
 | **Services** | Linux systemd services or Windows services and their current/configured state |
@@ -109,8 +109,6 @@ These are initial test figures, not a fleet-capacity guarantee. Actual requireme
 ### Secure access
 
 The installed default is `EURYPHOS_COOKIE_SECURE=true`. Browser authentication requires HTTPS even though the HTTP login page can be viewed. Configure a trusted HTTPS reverse proxy and use `https://<your-hostname>/login` before normal use. Do not expose the raw port 8080 listener to the public internet.
-
-The current test container has secure cookies temporarily disabled for LAN-only UI testing. Restore `EURYPHOS_COOKIE_SECURE=true` after HTTPS is configured. Do not use the temporary HTTP configuration on an untrusted network.
 
 ## Enrolling computers
 
