@@ -2810,7 +2810,8 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 		COALESCE(sum(CASE WHEN t.status='succeeded' THEN 1 ELSE 0 END),0),
 		COALESCE(sum(CASE WHEN t.status='failed' THEN 1 ELSE 0 END),0),
 		COALESCE(sum(CASE WHEN t.status='running' THEN 1 ELSE 0 END),0),
-		COALESCE(sum(CASE WHEN t.status='queued' OR t.status='received' THEN 1 ELSE 0 END),0)
+		COALESCE(sum(CASE WHEN t.status='queued' OR t.status='received' THEN 1 ELSE 0 END),0),
+		COALESCE(MAX(t.updated_at), j.created_at)
 		FROM jobs j LEFT JOIN job_targets t ON t.job_id=j.id
 		GROUP BY j.id ORDER BY j.created_at DESC,j.id DESC LIMIT ? OFFSET ?`,
 		pageSize, (page-1)*pageSize)
@@ -2821,14 +2822,14 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	items := []map[string]any{}
 	for rows.Next() {
-		var id, action, status, createdAt string
+		var id, action, status, createdAt, lastUpdatedAt string
 		var targetCount, succeeded, failed, running, pending int
-		if err := rows.Scan(&id,&action,&status,&createdAt,&targetCount,&succeeded,&failed,&running,&pending); err != nil {
+		if err := rows.Scan(&id,&action,&status,&createdAt,&targetCount,&succeeded,&failed,&running,&pending,&lastUpdatedAt); err != nil {
 			write(w, http.StatusInternalServerError, response{"error": "job_list_read_failed"})
 			return
 		}
 		items = append(items, map[string]any{
-			"id":id,"action":action,"status":status,"created_at":createdAt,
+			"id":id,"action":action,"status":status,"created_at":createdAt,"last_updated_at":lastUpdatedAt,
 			"target_count":targetCount,"succeeded":succeeded,"failed":failed,"running":running,"pending":pending,
 		})
 	}
@@ -2849,7 +2850,7 @@ func (s *Server) getJob(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusNotFound, response{"error": "job_not_found"})
 		return
 	}
-	rows, err := s.db.QueryContext(r.Context(), "SELECT device_id, status, error FROM job_targets WHERE job_id = ?", r.PathValue("id"))
+	rows, err := s.db.QueryContext(r.Context(), "SELECT device_id, status, error, updated_at FROM job_targets WHERE job_id = ?", r.PathValue("id"))
 	if err != nil {
 		write(w, http.StatusInternalServerError, response{"error": "database_error"})
 		return
@@ -2857,13 +2858,13 @@ func (s *Server) getJob(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	items := []map[string]any{}
 	for rows.Next() {
-		var deviceID, state string
+		var deviceID, state, updatedAt string
 		var message sql.NullString
-		if err := rows.Scan(&deviceID, &state, &message); err != nil {
+		if err := rows.Scan(&deviceID, &state, &message, &updatedAt); err != nil {
 			write(w, http.StatusInternalServerError, response{"error": "database_error"})
 			return
 		}
-		items = append(items, map[string]any{"device_id": deviceID, "status": state, "error": message.String})
+		items = append(items, map[string]any{"device_id": deviceID, "status": state, "updated_at": updatedAt, "error": message.String})
 	}
 	if err := rows.Err(); err != nil {
 		write(w, http.StatusInternalServerError, response{"error": "database_error"})
