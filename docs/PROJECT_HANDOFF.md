@@ -274,7 +274,9 @@ These checks do not by themselves qualify a live server/agent deployment. A fres
 
 ### Agent CI
 
-The current agent main commit `4963c7a96cb79e986de2acf20f5edce641a0db41` passed [GitHub Actions run 45638390318](https://github.com/gitarman94/Euryphos-Agent/actions/runs/45638390318) on 2026-11-25. The validate job passed `go test ./...`, `go vet ./...`, Linux build, Windows amd64 cross-build, and macOS arm64 cross-build, including the claim-resolution handshake and regression tests. Later documentation-only commits `731ee3a2ce95fdc65dfa81e6fedf7b24730954c2` and `8b1aa6d8ea89aeb659733baba6c5968525c37869` also passed runs `45643719942` and `45643725887`. Cross-builds do not certify runtime support on those systems.
+Agent source/installer revision `60b7364705e8a68fe376a11536d0a023c6f5f334` passed [GitHub Actions run 45667491352](https://github.com/gitarman94/Euryphos-Agent/actions/runs/45667491352) on 2026-11-25. The validate job passed `bash -n scripts/install.sh`, `go test ./...`, `go vet ./...`, Linux build, Windows amd64 cross-build, and macOS arm64 cross-build. This validates source, installer syntax, and cross-compilation only; the initial Linux systemd installer has not been run on a real endpoint and Windows has no installer.
+
+The agent repository subsequently received documentation-only commits, currently through `70e1400d904cecf40fbf9e024c5eea4f9b189a1d`. The latest README/handoff CI run was not yet complete at the time of this snapshot. No tagged agent release has been published; the tag-triggered release workflow has not been exercised. Cross-builds do not certify runtime support on those systems.
 
 ### Overdue-job workflow CI validation
 
