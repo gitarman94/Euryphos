@@ -287,6 +287,7 @@ CREATE TABLE IF NOT EXISTS job_group_targets (
 CREATE INDEX IF NOT EXISTS idx_job_group_targets_group ON job_group_targets(group_id);
 
 CREATE INDEX IF NOT EXISTS idx_job_targets_device_status ON job_targets(device_id, status);
+CREATE INDEX IF NOT EXISTS idx_job_targets_device_lease ON job_targets(device_id, status, updated_at);
 CREATE INDEX IF NOT EXISTS idx_jobs_status_created ON jobs(status, created_at);
 
 INSERT OR IGNORE INTO schema_migrations(version) VALUES (1);
