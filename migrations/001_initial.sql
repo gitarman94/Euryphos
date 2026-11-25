@@ -149,6 +149,48 @@ CREATE TABLE IF NOT EXISTS device_network_interfaces (
 CREATE INDEX IF NOT EXISTS idx_network_interfaces_device ON device_network_interfaces(device_id);
 CREATE INDEX IF NOT EXISTS idx_network_interfaces_mac ON device_network_interfaces(mac_address);
 
+CREATE TABLE IF NOT EXISTS device_storage_disks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    disk_key TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    manufacturer TEXT NOT NULL DEFAULT '',
+    serial_number TEXT NOT NULL DEFAULT '',
+    interface_type TEXT NOT NULL DEFAULT '',
+    capacity_bytes INTEGER,
+    logical_block_size INTEGER,
+    is_removable INTEGER,
+    is_rotational INTEGER,
+    status TEXT NOT NULL DEFAULT '',
+    observed_at TEXT NOT NULL,
+    UNIQUE(device_id,disk_key)
+);
+CREATE INDEX IF NOT EXISTS idx_storage_disks_device ON device_storage_disks(device_id);
+
+CREATE TABLE IF NOT EXISTS device_storage_volumes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    volume_key TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    parent_key TEXT NOT NULL DEFAULT '',
+    device TEXT NOT NULL DEFAULT '',
+    filesystem TEXT NOT NULL DEFAULT '',
+    mount_point TEXT NOT NULL DEFAULT '',
+    volume_label TEXT NOT NULL DEFAULT '',
+    capacity_bytes INTEGER,
+    free_bytes INTEGER,
+    available_bytes INTEGER,
+    used_bytes INTEGER,
+    block_size INTEGER,
+    is_read_only INTEGER,
+    status TEXT NOT NULL DEFAULT '',
+    observed_at TEXT NOT NULL,
+    UNIQUE(device_id,volume_key)
+);
+CREATE INDEX IF NOT EXISTS idx_storage_volumes_device ON device_storage_volumes(device_id);
+CREATE INDEX IF NOT EXISTS idx_storage_volumes_mount ON device_storage_volumes(mount_point);
+
 CREATE TABLE IF NOT EXISTS installed_software (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
@@ -234,3 +276,4 @@ INSERT OR IGNORE INTO schema_migrations(version) VALUES (6);
 INSERT OR IGNORE INTO schema_migrations(version) VALUES (7);
 INSERT OR IGNORE INTO schema_migrations(version) VALUES (8);
 INSERT OR IGNORE INTO schema_migrations(version) VALUES (9);
+INSERT OR IGNORE INTO schema_migrations(version) VALUES (10);
