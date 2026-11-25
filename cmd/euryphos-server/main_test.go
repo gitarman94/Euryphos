@@ -13,6 +13,65 @@ import (
 	"time"
 )
 
+func TestConnectionState(t *testing.T) {
+	s := &Server{onlineGrace: time.Minute}
+	if got := s.connectionState(sql.NullString{}); got != "never_connected" {
+		t.Fatalf("empty last-seen should be never_connected, got %q", got)
+	}
+	recent := sql.NullString{String: time.Now().UTC().Format(time.RFC3339Nano), Valid: true}
+	if got := s.connectionState(recent); got != "online" {
+		t.Fatalf("recent heartbeat should be online, got %q", got)
+	}
+	old := sql.NullString{String: time.Now().UTC().Add(-10 * time.Minute).Format(time.RFC3339Nano), Valid: true}
+	if got := s.connectionState(old); got != "offline" {
+		t.Fatalf("stale heartbeat should be offline, got %q", got)
+	}
+}
+
+func TestMigrationAddsConnectionColumnsToExistingDatabase(t *testing.T) {
+	db, err := openDatabase(filepath.Join(t.TempDir(), "legacy.db"))
+	if err != nil {
+		t.Fatalf("open SQLite database: %v", err)
+	}
+	defer db.Close()
+	_, err = db.Exec(`CREATE TABLE devices (
+		id TEXT PRIMARY KEY,
+		hostname TEXT NOT NULL DEFAULT '',
+		os_family TEXT NOT NULL DEFAULT '',
+		os_version TEXT NOT NULL DEFAULT '',
+		status TEXT NOT NULL DEFAULT 'pending',
+		token_hash TEXT,
+		last_seen TEXT,
+		created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`)
+	if err != nil {
+		t.Fatalf("create legacy devices table: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := migrate(ctx, db); err != nil {
+		t.Fatalf("upgrade legacy database: %v", err)
+	}
+	columns := map[string]bool{}
+	rows, err := db.Query("PRAGMA table_info(devices)")
+	if err != nil {
+		t.Fatalf("inspect migrated devices table: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, dataType string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &primaryKey); err != nil {
+			t.Fatalf("scan table metadata: %v", err)
+		}
+		columns[name] = true
+	}
+	if !columns["first_connected_at"] || !columns["last_connected_at"] {
+		t.Fatalf("migration did not add connection columns: %#v", columns)
+	}
+}
+
 func TestUUIDFormat(t *testing.T) {
 	id := uuid()
 	if len(id) != 36 || id[8] != '-' || id[13] != '-' || id[18] != '-' || id[23] != '-' {
@@ -114,6 +173,9 @@ func TestSQLiteServerAgentProtocol(t *testing.T) {
 	devices := performRequest(t, handler, http.MethodGet, "/api/v1/devices", "admin-test-token", "", http.StatusOK)
 	if !strings.Contains(string(devices), `"hostname":"test-linux"`) || !strings.Contains(string(devices), `"status":"approved"`) {
 		t.Fatalf("device inventory not visible through admin API: %s", devices)
+	}
+	if !strings.Contains(string(devices), `"connection_state":"online"`) || !strings.Contains(string(devices), `"first_connected_at":`) || !strings.Contains(string(devices), `"last_connected_at":`) {
+		t.Fatalf("server-derived endpoint connection state is missing: %s", devices)
 	}
 	filtered := performRequest(t, handler, http.MethodGet, "/api/v1/devices?q=test&status=approved&os_family=linux&page=1&page_size=1&sort=hostname&direction=desc", "admin-test-token", "", http.StatusOK)
 	if !strings.Contains(string(filtered), `"total":1`) || !strings.Contains(string(filtered), `"page_size":1`) || !strings.Contains(string(filtered), `"hostname":"test-linux"`) {
