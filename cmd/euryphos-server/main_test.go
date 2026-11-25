@@ -58,8 +58,11 @@ func TestInventoryHistoryFingerprintIgnoresLiveMetrics(t *testing.T) {
 	if bytes.Equal(inventoryHistoryFingerprint("system", before), inventoryHistoryFingerprint("system", identityChange)) {
 		t.Fatal("identity changes must create inventory history snapshots")
 	}
-	if !bytes.Equal(inventoryHistoryFingerprint("network", before), inventoryHistoryFingerprint("network", after)) {
-		t.Fatal("non-system category payloads should use exact change detection")
+	if !bytes.Equal(inventoryHistoryFingerprint("network", before), before) {
+		t.Fatal("non-system categories must retain their full payload for exact change detection")
+	}
+	if bytes.Equal(inventoryHistoryFingerprint("network", before), inventoryHistoryFingerprint("network", after)) {
+		t.Fatal("different non-system payloads must remain different history fingerprints")
 	}
 }
 func TestConnectionState(t *testing.T) {
