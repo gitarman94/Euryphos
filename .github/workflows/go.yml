@@ -19,9 +19,19 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Normalize module metadata
+        run: go mod tidy
       - name: Run tests
         run: go test ./...
       - name: Run vet
         run: go vet ./...
       - name: Build server
         run: go build -trimpath ./cmd/euryphos-server
+      - name: Upload resolved module metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: euryphos-go-module-metadata
+          path: |
+            go.mod
+            go.sum
