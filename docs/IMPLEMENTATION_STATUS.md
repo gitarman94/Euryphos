@@ -68,3 +68,10 @@ Implemented in the server source:
 - SQLite indexes support device/category timeline reads. Existing databases receive the table through the server's startup migration routine.
 
 Integration assertions now cover latest-value replacement, historical paging, and safe detail responses. They have not yet been executed in a build environment.
+
+
+## First device inventory foundation milestone
+
+The server now writes each accepted inventory submission transactionally to an append-only `device_inventory_history` table while updating the existing latest-value `device_inventory` row. New administrator APIs return device detail and bounded, cursor-paginated inventory history. An SQLite migration creates the history table and indexes on existing installations.
+
+Server integration tests were extended to cover latest-payload replacement, history paging, and exclusion of credential hashes from the detail API. The test suite has not been executed in this environment.
