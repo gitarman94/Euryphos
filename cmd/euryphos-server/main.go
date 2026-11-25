@@ -402,6 +402,10 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_devices_serial_number ON devices(serial_number)`,
 		`CREATE INDEX IF NOT EXISTS idx_devices_smbios_uuid ON devices(smbios_uuid)`,
 		`CREATE INDEX IF NOT EXISTS idx_devices_directory_domain_ou ON devices(directory_domain, organizational_unit)`,
+		`CREATE INDEX IF NOT EXISTS idx_devices_os_family_distribution ON devices(os_family, os_distribution, os_distribution_version)`,
+		`CREATE INDEX IF NOT EXISTS idx_devices_last_seen ON devices(last_seen)`,
+		`CREATE INDEX IF NOT EXISTS idx_network_interfaces_mac ON device_network_interfaces(mac_address)`,
+		`CREATE INDEX IF NOT EXISTS idx_machine_groups_type ON machine_groups(group_type)`,
 	} {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
 			return err
