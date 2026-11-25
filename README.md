@@ -186,6 +186,6 @@ The API is an early implementation contract and may change before a stable relea
 
 ## License and commercial use
 
-Euryphos is source-available under the **Euryphos Personal Use License (EPUL) 1.0**. Individuals may use and modify it free of charge for their own personal devices, home lab, hobby, and self-directed learning. Use by or on behalf of a company or other organization—including managing organizational devices or infrastructure—requires a separate written commercial license.
+Euryphos is source-available under the **Euryphos Personal Use License (EPUL) 1.0**. Individuals may use and modify it free of charge for their own personal devices, home lab, hobby, and self-directed learning. Use by or on behalf of a company, corporation, or other business—including managing its devices or infrastructure—requires a separate written commercial license. Other institutional situations are addressed in [`LICENSE`](LICENSE).
 
 This is **not an OSI-approved open-source license**. Read [`LICENSE`](LICENSE) and [`COMMERCIAL-LICENSING.md`](COMMERCIAL-LICENSING.md) before use. Third-party components and previously granted rights remain subject to their applicable licenses; this license does not withdraw rights already granted under another license.
