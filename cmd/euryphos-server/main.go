@@ -757,9 +757,26 @@ func integerValue(value any) any {
 	return nil
 }
 
+func floatValue(value any) any {
+	switch number := value.(type) {
+	case float64:
+		return number
+	case int:
+		return float64(number)
+	case int64:
+		return float64(number)
+	case json.Number:
+		result, err := strconv.ParseFloat(number.String(), 64)
+		if err == nil { return result }
+	}
+	return nil
+}
+
 func (s *Server) applySystemInventory(ctx context.Context, tx *sql.Tx, deviceID string, payload []byte, observedAt string) error {
 	var data map[string]any
-	if err := json.Unmarshal(payload, &data); err != nil { return err }
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	if err := decoder.Decode(&data); err != nil { return err }
 	hardware := mapValue(data["hardware"])
 	memory := mapValue(data["memory"])
 	root := mapValue(data["root_filesystem"])
@@ -779,7 +796,7 @@ func (s *Server) applySystemInventory(ctx context.Context, tx *sql.Tx, deviceID 
 		integerValue(memory["total_bytes"]), textValue(hardware["bios_version"]),
 		textValue(hardware["bios_release_date"]), integerValue(root["total_bytes"]),
 		integerValue(root["free_bytes"]), integerValue(root["available_bytes"]),
-		textValue(data["last_boot"]), data["uptime_seconds"], textValue(data["timezone"]),
+		textValue(data["last_boot"]), floatValue(data["uptime_seconds"]), textValue(data["timezone"]),
 		textValue(data["agent_version"]), observedAt,
 	}
 	_, err := tx.ExecContext(ctx, `UPDATE devices SET
