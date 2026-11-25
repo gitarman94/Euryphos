@@ -14,7 +14,7 @@ DATA_DIR="/var/lib/euryphos"
 BACKUP_DIR="${DATA_DIR}/backups"
 SERVICE="euryphos.service"
 MODE="${1:-install}"
-INSTALLER_REVISION="2026-11-25.6"
+INSTALLER_REVISION="2026-11-25.7"
 
 log() { printf '[euryphos] %s\n' "$*"; }
 die() { printf '[euryphos] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -281,14 +281,16 @@ if [[ "$MODE" == "uninstall" ]]; then
 fi
 
 if [[ "$MODE" == "reinstall" ]]; then
+  log "Checking resources before any destructive action."
+  preflight_resources
   confirm_data_purge
   remove_installation 1
   MODE="install"
   ui_warn "Starting a clean installation with a new database and newly generated credentials."
+else
+  log "Install mode: ${MODE}"
+  preflight_resources
 fi
-
-log "Install mode: ${MODE}"
-preflight_resources
 
 ui_section "2/6  Install operating-system dependencies"
 export DEBIAN_FRONTEND=noninteractive
