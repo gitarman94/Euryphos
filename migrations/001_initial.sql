@@ -73,6 +73,8 @@ CREATE INDEX IF NOT EXISTS idx_devices_distribution ON devices(os_family, os_dis
 CREATE INDEX IF NOT EXISTS idx_devices_directory_domain_ou ON devices(directory_domain, organizational_unit);
 CREATE INDEX IF NOT EXISTS idx_devices_serial_number ON devices(serial_number);
 CREATE INDEX IF NOT EXISTS idx_devices_smbios_uuid ON devices(smbios_uuid);
+CREATE INDEX IF NOT EXISTS idx_devices_smbios_uuid_normalized ON devices(lower(replace(replace(replace(replace(smbios_uuid,'-',''),'{',''),'}',''),' ','')));
+CREATE INDEX IF NOT EXISTS idx_devices_hardware_identity ON devices(serial_number COLLATE NOCASE, manufacturer COLLATE NOCASE, model COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS idx_devices_os_family_distribution ON devices(os_family, os_distribution, os_distribution_version);
 CREATE INDEX IF NOT EXISTS idx_devices_last_seen ON devices(last_seen);
 
