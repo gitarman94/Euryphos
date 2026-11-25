@@ -79,15 +79,23 @@ The server is intended to run as a single instance with its SQLite database on p
 
 The first deployment target is a **Debian 13 Proxmox LXC container** running systemd. The installer supports Linux `amd64` and `arm64`.
 
-Once the first versioned GitHub release has been published, run this single command as `root` inside the container:
+For an **initial test installation before the first versioned release**, run this single command as `root` inside the Debian 13 container:
+
+```bash
+apt-get update && apt-get install -y ca-certificates curl && EURYPHOS_SOURCE_BUILD=1 bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/gitarman94/Euryphos/main/scripts/install.sh | bash -s -- install'
+```
+
+This explicitly builds the current public `main` source inside the CT. It installs the Debian `golang-go` build package, downloads the exact main-branch commit selected by GitHub at install time, builds the server for the CT architecture, and then uses the same service setup, SQLite backup, and health-check path as the release installer. The Go build tools remain installed in the CT. This is a **testing path**, not an immutable release deployment.
+
+After the first versioned GitHub release is published, the normal prebuilt-binary install command will be:
 
 ```bash
 apt-get update && apt-get install -y ca-certificates curl && bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/gitarman94/Euryphos/main/scripts/install.sh | bash -s -- install'
 ```
 
-The installer downloads the matching release archive, verifies its SHA-256 checksum, creates the unprivileged service account, installs the systemd unit, and creates the initial configuration and secrets. The default service listener is port `8080`; place it behind a trusted HTTPS reverse proxy before exposing it to untrusted networks.
+The release installer downloads the matching Linux archive and verifies its SHA-256 checksum before installation. Both paths create the unprivileged service account, install the systemd unit, and create the initial configuration and secrets. The default service listener is port `8080`; place it behind a trusted HTTPS reverse proxy before exposing it to untrusted networks.
 
-**Release availability:** the installer script is in the repository, but a first versioned release has not yet been published. The command above will not complete until a release containing the server archives and `SHA256SUMS` is available. Fresh-install, upgrade, rollback, reboot, and restore testing in a Debian 13 Proxmox CT is also still required.
+Fresh-install, in-place upgrade, failed-upgrade rollback, reboot, and database restore testing in a Debian 13 Proxmox CT are still required.
 
 After installation, the service is managed with:
 
