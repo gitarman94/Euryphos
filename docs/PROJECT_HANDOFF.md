@@ -250,6 +250,8 @@ The API activity timestamp and earlier handoff synchronization runs **[456305231
 
 The source-build test installer change on commit `c53a6540eeb6abb9fbb766180938f35e5bcb0347` passed [run 45644152313](https://github.com/gitarman94/Euryphos/actions/runs/45644152313), including module normalization, tests, vet, installer shell syntax validation, and server build. The following README update passed [run 45644160200](https://github.com/gitarman94/Euryphos/actions/runs/45644160200).
 
+The systemd unit-state fix on commit `83d38ff492c85d77d4ed611358c765168c2c0b9c` passed [run 45650543257](https://github.com/gitarman94/Euryphos/actions/runs/45650543257). It passed module normalization, tests, vet, installer shell syntax validation, and server build. The installer now runs `systemctl daemon-reload`, checks `LoadState` and `ActiveState`, stops only an active loaded unit, and preserves the pre-update active/inactive state if rollback is needed.
+
 These checks do not execute the installer inside Debian 13 or run a live server/agent deployment.
 
 ### Agent CI
@@ -478,7 +480,7 @@ The normal installer path (without `EURYPHOS_SOURCE_BUILD=1`) downloads the late
 
 For an upgrade, rerun the same source-build command with final argument `upgrade`; this builds the current `main` commit. For a pinned released version, set `EURYPHOS_VERSION=vX.Y.Z` and omit the source-build variable.
 
-The installer requires root, Debian 13, and systemd. It installs `curl`, `jq`, `sqlite3`, `openssl`, CA certificates, and (only in source-build mode) `golang-go`. The application itself remains one Go server process with embedded SQLite; no database daemon, Docker, or Compose is installed.
+The installer requires root, Debian 13, and systemd. It installs `curl`, `jq`, `sqlite3`, `openssl`, CA certificates, and (only in source-build mode) `golang-go`. Before stopping anything, it reloads systemd's unit catalogue and checks the service's actual load/active states; an absent, unloaded, inactive, failed, or dead unit is not stopped. Rollback restarts the previous server only when it was running before the attempted update. The application itself remains one Go server process with embedded SQLite; no database daemon, Docker, or Compose is installed.
 
 ### Non-data-destructive upgrade contract
 
