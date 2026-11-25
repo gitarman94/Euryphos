@@ -29,6 +29,7 @@ type Server struct {
 	db                      *sql.DB
 	adminToken, enrollToken string
 	onlineGrace             time.Duration
+	cookieSecure            bool
 }
 
 type response map[string]any
@@ -65,7 +66,8 @@ func main() {
 		}
 		graceSeconds = parsed
 	}
-	s := &Server{db: db, adminToken: admin, enrollToken: enroll, onlineGrace: time.Duration(graceSeconds) * time.Second}
+	s := &Server{db: db, adminToken: admin, enrollToken: enroll, onlineGrace: time.Duration(graceSeconds) * time.Second,
+		cookieSecure: !strings.EqualFold(env("EURYPHOS_COOKIE_SECURE", "true"), "false")}
 	addr := env("EURYPHOS_LISTEN", ":8080")
 	log.Printf("Euryphos Go server listening on %s (SQLite: %s)", addr, env("EURYPHOS_DB_PATH", "./data/euryphos.db"))
 	server := &http.Server{
@@ -82,7 +84,13 @@ func main() {
 func routes(s *Server) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.health)
+	mux.HandleFunc("GET /login", s.loginPage)
+	mux.HandleFunc("GET /console", s.admin(s.consolePage))
+	mux.HandleFunc("GET /console/", s.admin(s.consolePage))
+	mux.HandleFunc("GET /assets/app.js", s.consoleJS)
+	mux.HandleFunc("GET /assets/app.css", s.consoleCSS)
 	mux.HandleFunc("POST /api/v1/auth/session", s.authSession)
+	mux.HandleFunc("POST /api/v1/auth/logout", s.admin(s.logoutSession))
 	mux.HandleFunc("GET /api/v1/audit", s.admin(s.auditList))
 	mux.HandleFunc("POST /api/v1/enrollment", s.enroll)
 	mux.HandleFunc("POST /api/v1/devices/{id}/approve", s.approve)
@@ -311,6 +319,14 @@ func migrate(ctx context.Context, db *sql.DB) error {
 			ON device_inventory_history(device_id, category, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_inventory_history_device_received
 			ON device_inventory_history(device_id, received_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS admin_sessions (
+			token_hash TEXT PRIMARY KEY,
+			csrf_hash TEXT NOT NULL,
+			expires_at TEXT NOT NULL,
+			created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			source_ip TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_admin_sessions_expiry ON admin_sessions(expires_at)`,
 		`CREATE TABLE IF NOT EXISTS jobs (
 			id TEXT PRIMARY KEY,
 			action TEXT NOT NULL,
@@ -344,6 +360,7 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (3)`,
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (4)`,
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (5)`,
+		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (6)`,
 	}
 	for _, statement := range statements {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
@@ -499,24 +516,137 @@ func auditEvent(ctx context.Context, exec auditExecutor, r *http.Request, actorT
 	return err
 }
 
+const adminSessionLifetime = 8 * time.Hour
+
 func (s *Server) authSession(w http.ResponseWriter, r *http.Request) {
 	if !bearer(r, s.adminToken) {
 		_ = auditEvent(r.Context(), s.db, r, "admin", "", "auth.admin.failure", "denied", "session", "", map[string]any{"reason": "invalid_credential"})
 		write(w, http.StatusUnauthorized, response{"error": "unauthorized"})
 		return
 	}
-	if err := auditEvent(r.Context(), s.db, r, "admin", "configured-admin", "auth.admin.success", "success", "session", "", nil); err != nil {
+	sessionToken := randomToken()
+	csrfToken := randomToken()
+	now := time.Now().UTC()
+	expires := now.Add(adminSessionLifetime)
+	expiresText := expires.Format(time.RFC3339Nano)
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "session_create_failed"})
+		return
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(r.Context(), "DELETE FROM admin_sessions WHERE expires_at<=?", now.Format(time.RFC3339Nano)); err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "session_cleanup_failed"})
+		return
+	}
+	sourceIP := r.RemoteAddr
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		sourceIP = host
+	}
+	if _, err := tx.ExecContext(r.Context(), "INSERT INTO admin_sessions(token_hash,csrf_hash,expires_at,source_ip) VALUES(?,?,?,?)",
+		hash(sessionToken), hash(csrfToken), expiresText, sourceIP); err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "session_create_failed"})
+		return
+	}
+	if err := auditEvent(r.Context(), tx, r, "admin", "configured-admin", "auth.admin.success", "success", "session", "", nil); err != nil {
 		write(w, http.StatusInternalServerError, response{"error": "audit_write_failed"})
 		return
 	}
-	write(w, http.StatusOK, response{"status": "authenticated"})
+	if err := tx.Commit(); err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "session_commit_failed"})
+		return
+	}
+	s.setSessionCookies(w, sessionToken, csrfToken, expires)
+	write(w, http.StatusOK, response{"status": "authenticated", "expires_at": expiresText})
+}
+
+func (s *Server) setSessionCookies(w http.ResponseWriter, sessionToken, csrfToken string, expires time.Time) {
+	maxAge := int(time.Until(expires).Seconds())
+	if maxAge < 0 { maxAge = 0 }
+	for _, cookie := range []*http.Cookie{
+		{Name: "euryphos_admin_session", Value: sessionToken, Path: "/", HttpOnly: true, Secure: s.cookieSecure, SameSite: http.SameSiteStrictMode, Expires: expires, MaxAge: maxAge},
+		{Name: "euryphos_csrf", Value: csrfToken, Path: "/", HttpOnly: false, Secure: s.cookieSecure, SameSite: http.SameSiteStrictMode, Expires: expires, MaxAge: maxAge},
+	} {
+		http.SetCookie(w, cookie)
+	}
+}
+
+func (s *Server) clearSessionCookies(w http.ResponseWriter) {
+	for _, cookie := range []*http.Cookie{
+		{Name: "euryphos_admin_session", Value: "", Path: "/", HttpOnly: true, Secure: s.cookieSecure, SameSite: http.SameSiteStrictMode, MaxAge: -1},
+		{Name: "euryphos_csrf", Value: "", Path: "/", HttpOnly: false, Secure: s.cookieSecure, SameSite: http.SameSiteStrictMode, MaxAge: -1},
+	} {
+		http.SetCookie(w, cookie)
+	}
+}
+
+func (s *Server) adminAuthorization(r *http.Request) (bool, bool) {
+	if bearer(r, s.adminToken) {
+		return true, false
+	}
+	sessionCookie, err := r.Cookie("euryphos_admin_session")
+	if err != nil || sessionCookie.Value == "" {
+		return false, false
+	}
+	var csrfHash, expiresText string
+	if err := s.db.QueryRowContext(r.Context(), "SELECT csrf_hash,expires_at FROM admin_sessions WHERE token_hash=?",
+		hash(sessionCookie.Value)).Scan(&csrfHash, &expiresText); err != nil {
+		return false, false
+	}
+	expires, err := time.Parse(time.RFC3339Nano, expiresText)
+	if err != nil || !time.Now().Before(expires) {
+		_, _ = s.db.ExecContext(r.Context(), "DELETE FROM admin_sessions WHERE token_hash=?", hash(sessionCookie.Value))
+		return false, false
+	}
+	switch r.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return true, false
+	}
+	csrfCookie, cookieErr := r.Cookie("euryphos_csrf")
+	headerToken := r.Header.Get("X-Euryphos-CSRF")
+	if cookieErr != nil || headerToken == "" || !constantString(csrfCookie.Value, headerToken) ||
+		!constantHashMatch(csrfHash, headerToken) {
+		return true, true
+	}
+	return true, false
+}
+
+func (s *Server) logoutSession(w http.ResponseWriter, r *http.Request) {
+	if sessionCookie, err := r.Cookie("euryphos_admin_session"); err == nil && sessionCookie.Value != "" {
+		tx, err := s.db.BeginTx(r.Context(), nil)
+		if err != nil {
+			write(w, http.StatusInternalServerError, response{"error": "logout_failed"})
+			return
+		}
+		defer tx.Rollback()
+		if _, err := tx.ExecContext(r.Context(), "DELETE FROM admin_sessions WHERE token_hash=?", hash(sessionCookie.Value)); err != nil {
+			write(w, http.StatusInternalServerError, response{"error": "logout_failed"})
+			return
+		}
+		if err := auditEvent(r.Context(), tx, r, "admin", "configured-admin", "auth.admin.logout", "success", "session", "", nil); err != nil {
+			write(w, http.StatusInternalServerError, response{"error": "audit_write_failed"})
+			return
+		}
+		if err := tx.Commit(); err != nil {
+			write(w, http.StatusInternalServerError, response{"error": "logout_commit_failed"})
+			return
+		}
+	}
+	s.clearSessionCookies(w)
+	write(w, http.StatusOK, response{"status": "logged_out"})
 }
 
 func (s *Server) admin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !bearer(r, s.adminToken) {
+		authorized, csrfFailure := s.adminAuthorization(r)
+		if !authorized {
 			_ = auditEvent(r.Context(), s.db, r, "admin", "", "auth.admin.failure", "denied", "api", r.URL.Path, map[string]any{"method": r.Method})
 			write(w, http.StatusUnauthorized, response{"error": "unauthorized"})
+			return
+		}
+		if csrfFailure {
+			_ = auditEvent(r.Context(), s.db, r, "admin", "configured-admin", "auth.csrf.failure", "denied", "api", r.URL.Path, map[string]any{"method": r.Method})
+			write(w, http.StatusForbidden, response{"error": "csrf_validation_failed"})
 			return
 		}
 		next(w, r)
@@ -621,9 +751,15 @@ func (s *Server) revoke(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
-	if !bearer(r, s.adminToken) {
+	authorized, csrfFailure := s.adminAuthorization(r)
+	if !authorized {
 		_ = auditEvent(r.Context(), s.db, r, "admin", "", "auth.admin.failure", "denied", "api", r.URL.Path, map[string]any{"method": r.Method})
 		write(w, http.StatusUnauthorized, response{"error": "unauthorized"})
+		return false
+	}
+	if csrfFailure {
+		_ = auditEvent(r.Context(), s.db, r, "admin", "configured-admin", "auth.csrf.failure", "denied", "api", r.URL.Path, map[string]any{"method": r.Method})
+		write(w, http.StatusForbidden, response{"error": "csrf_validation_failed"})
 		return false
 	}
 	return true
@@ -2167,6 +2303,8 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'self'; form-action 'self'; frame-ancestors 'none'")
 		next.ServeHTTP(w, r)
 	})
 }
