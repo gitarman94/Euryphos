@@ -176,6 +176,7 @@ The API is an early implementation contract and may change before a stable relea
 ## Documentation
 
 - [`docs/PRODUCT_OVERVIEW.md`](docs/PRODUCT_OVERVIEW.md) — product goals and requirements.
+- [`docs/DEVICE_MANAGEMENT_UI_SPEC.md`](docs/DEVICE_MANAGEMENT_UI_SPEC.md) — Devices table, complete device details, telemetry fields, API/storage design, and privacy acceptance criteria.
 - [`docs/GO_ARCHITECTURE.md`](docs/GO_ARCHITECTURE.md) — server/API and SQLite architecture.
 - [`docs/REPOSITORY_LAYOUT.md`](docs/REPOSITORY_LAYOUT.md) — server and independently distributed agent responsibilities.
 - [`docs/SUPPORT_MATRIX.md`](docs/SUPPORT_MATRIX.md) — planned platform and distribution support.
