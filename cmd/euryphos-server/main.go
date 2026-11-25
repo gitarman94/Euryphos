@@ -100,6 +100,8 @@ func routes(s *Server) http.Handler {
 	mux.HandleFunc("GET /api/v1/jobs/{id}", s.admin(s.getJob))
 	mux.HandleFunc("GET /api/v1/groups", s.admin(s.listGroups))
 	mux.HandleFunc("POST /api/v1/groups", s.admin(s.createGroup))
+	mux.HandleFunc("PUT /api/v1/groups/{id}", s.admin(s.updateGroup))
+	mux.HandleFunc("DELETE /api/v1/groups/{id}", s.admin(s.deleteGroup))
 	mux.HandleFunc("GET /api/v1/groups/{id}/members", s.admin(s.groupMembers))
 	mux.HandleFunc("POST /api/v1/groups/{id}/members", s.admin(s.addGroupMembers))
 	mux.HandleFunc("DELETE /api/v1/groups/{id}/members/{deviceID}", s.admin(s.removeGroupMember))
@@ -325,6 +327,13 @@ func migrate(ctx context.Context, db *sql.DB) error {
 			updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			PRIMARY KEY(job_id, device_id)
 		)`,
+		`CREATE TABLE IF NOT EXISTS job_group_targets (
+			job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+			group_id INTEGER NOT NULL,
+			group_name TEXT NOT NULL,
+			PRIMARY KEY(job_id, group_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_job_group_targets_group ON job_group_targets(group_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_devices_status ON devices(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_devices_hostname ON devices(hostname)`,
 		`CREATE INDEX IF NOT EXISTS idx_inventory_category ON device_inventory(category)`,
@@ -1500,6 +1509,122 @@ func (s *Server) createGroup(w http.ResponseWriter, r *http.Request) {
 	write(w,http.StatusCreated,response{"id":id,"name":in.Name,"group_type":in.Type})
 }
 
+func (s *Server) updateGroup(w http.ResponseWriter, r *http.Request) {
+	id, err := groupID(r)
+	if err != nil {
+		write(w, http.StatusBadRequest, response{"error": "invalid_group_id"})
+		return
+	}
+	var in struct {
+		Name        string      `json:"name"`
+		Description string      `json:"description"`
+		Type        string      `json:"group_type"`
+		Operator    string      `json:"match_operator"`
+		Rules       []groupRule `json:"rules"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	in.Name = strings.TrimSpace(in.Name)
+	in.Description = strings.TrimSpace(in.Description)
+	if in.Name == "" || len(in.Name) > 100 || len(in.Description) > 500 ||
+		(in.Type != "static" && in.Type != "dynamic") {
+		write(w, http.StatusBadRequest, response{"error": "invalid_group"})
+		return
+	}
+	if in.Operator == "" {
+		in.Operator = "all"
+	}
+	if in.Operator != "all" && in.Operator != "any" {
+		write(w, http.StatusBadRequest, response{"error": "invalid_match_operator"})
+		return
+	}
+	if in.Type == "dynamic" && !validGroupRules(in.Rules) {
+		write(w, http.StatusBadRequest, response{"error": "invalid_group_rules", "allowed_fields": sortedGroupFields()})
+		return
+	}
+	if in.Type == "static" && len(in.Rules) > 0 {
+		write(w, http.StatusBadRequest, response{"error": "static_group_cannot_have_rules"})
+		return
+	}
+
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "database_error"})
+		return
+	}
+	defer tx.Rollback()
+	var currentType string
+	if err := tx.QueryRowContext(r.Context(), "SELECT group_type FROM machine_groups WHERE id=?", id).Scan(&currentType); err != nil {
+		write(w, http.StatusNotFound, response{"error": "group_not_found"})
+		return
+	}
+	if currentType != in.Type {
+		write(w, http.StatusConflict, response{"error": "group_type_is_immutable"})
+		return
+	}
+	rules, _ := json.Marshal(in.Rules)
+	if _, err := tx.ExecContext(r.Context(), `UPDATE machine_groups
+		SET name=?, description=?, match_operator=?, rules_json=?, updated_at=CURRENT_TIMESTAMP
+		WHERE id=?`, in.Name, in.Description, in.Operator, string(rules), id); err != nil {
+		write(w, http.StatusConflict, response{"error": "group_name_conflict_or_update_failed"})
+		return
+	}
+	if in.Type == "dynamic" {
+		if _, err := tx.ExecContext(r.Context(), "DELETE FROM device_group_memberships WHERE group_id=?", id); err != nil {
+			write(w, http.StatusInternalServerError, response{"error": "group_membership_reset_failed"})
+			return
+		}
+		if err := s.refreshAllDynamicMemberships(r.Context(), tx, id, in.Operator, in.Rules); err != nil {
+			write(w, http.StatusInternalServerError, response{"error": "group_member_refresh_failed"})
+			return
+		}
+	}
+	if err := auditEvent(r.Context(), tx, r, "admin", "configured-admin", "group.updated", "success", "group", strconv.FormatInt(id, 10),
+		map[string]any{"name": in.Name, "group_type": in.Type, "rules": in.Rules}); err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "audit_write_failed"})
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "group_update_commit_failed"})
+		return
+	}
+	write(w, http.StatusOK, response{"id": id, "name": in.Name, "group_type": in.Type, "status": "updated"})
+}
+
+func (s *Server) deleteGroup(w http.ResponseWriter, r *http.Request) {
+	id, err := groupID(r)
+	if err != nil {
+		write(w, http.StatusBadRequest, response{"error": "invalid_group_id"})
+		return
+	}
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "database_error"})
+		return
+	}
+	defer tx.Rollback()
+	var name string
+	if err := tx.QueryRowContext(r.Context(), "SELECT name FROM machine_groups WHERE id=?", id).Scan(&name); err != nil {
+		write(w, http.StatusNotFound, response{"error": "group_not_found"})
+		return
+	}
+	if _, err := tx.ExecContext(r.Context(), "DELETE FROM machine_groups WHERE id=?", id); err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "group_delete_failed"})
+		return
+	}
+	if err := auditEvent(r.Context(), tx, r, "admin", "configured-admin", "group.deleted", "success", "group", strconv.FormatInt(id, 10),
+		map[string]any{"name": name}); err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "audit_write_failed"})
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "group_delete_commit_failed"})
+		return
+	}
+	write(w, http.StatusOK, response{"id": id, "status": "deleted"})
+}
+
 func sortedGroupFields() []string {
 	fields:=make([]string,0,len(groupFields))
 	for field:=range groupFields { fields=append(fields,field) }
@@ -1729,6 +1854,7 @@ func (s *Server) createJob(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Action    string          `json:"action"`
 		DeviceIDs []string        `json:"device_ids"`
+		GroupIDs  []int64         `json:"group_ids"`
 		Payload   json.RawMessage `json:"payload"`
 	}
 	if !decode(w, r, &in) {
@@ -1739,7 +1865,8 @@ func (s *Server) createJob(w http.ResponseWriter, r *http.Request) {
 		"software.install": true, "software.uninstall": true, "configuration.apply": true,
 		"service.control": true, "device.reboot": true, "device.shutdown": true, "agent.update": true,
 	}
-	if !allowed[in.Action] || len(in.DeviceIDs) == 0 || len(in.DeviceIDs) > 10000 {
+	if !allowed[in.Action] || len(in.DeviceIDs) > 10000 || len(in.GroupIDs) > 500 ||
+		(len(in.DeviceIDs) == 0 && len(in.GroupIDs) == 0) {
 		write(w, http.StatusBadRequest, response{"error": "invalid_action_or_targets"})
 		return
 	}
@@ -1764,8 +1891,32 @@ func (s *Server) createJob(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, deviceID := range in.DeviceIDs {
 		if _, err = tx.ExecContext(r.Context(), `INSERT OR IGNORE INTO job_targets(job_id, device_id)
-			SELECT ?, id FROM devices WHERE id = ? AND status = 'approved'`, id, deviceID); err != nil {
+			SELECT ?, id FROM devices WHERE id = ? AND status = 'approved' AND merged_into IS NULL`, id, deviceID); err != nil {
 			write(w, http.StatusInternalServerError, response{"error": "job_target_failed"})
+			return
+		}
+	}
+	seenGroups := make(map[int64]bool, len(in.GroupIDs))
+	for _, groupID := range in.GroupIDs {
+		if groupID < 1 || seenGroups[groupID] {
+			write(w, http.StatusBadRequest, response{"error": "invalid_group_ids"})
+			return
+		}
+		seenGroups[groupID] = true
+		var groupName string
+		if err := tx.QueryRowContext(r.Context(), "SELECT name FROM machine_groups WHERE id=?", groupID).Scan(&groupName); err != nil {
+			write(w, http.StatusBadRequest, response{"error": "group_not_found", "group_id": groupID})
+			return
+		}
+		if _, err := tx.ExecContext(r.Context(), `INSERT INTO job_group_targets(job_id,group_id,group_name) VALUES(?,?,?)`, id, groupID, groupName); err != nil {
+			write(w, http.StatusInternalServerError, response{"error": "job_group_target_failed"})
+			return
+		}
+		if _, err := tx.ExecContext(r.Context(), `INSERT OR IGNORE INTO job_targets(job_id,device_id)
+			SELECT ?, d.id FROM device_group_memberships m
+			JOIN devices d ON d.id=m.device_id
+			WHERE m.group_id=? AND d.status='approved' AND d.merged_into IS NULL`, id, groupID); err != nil {
+			write(w, http.StatusInternalServerError, response{"error": "job_group_expansion_failed"})
 			return
 		}
 	}
@@ -1778,7 +1929,8 @@ func (s *Server) createJob(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusBadRequest, response{"error": "no_approved_targets"})
 		return
 	}
-	if err := auditEvent(r.Context(), tx, r, "admin", "configured-admin", "job.created", "success", "job", id, map[string]any{"action": in.Action, "target_count": count}); err != nil {
+	if err := auditEvent(r.Context(), tx, r, "admin", "configured-admin", "job.created", "success", "job", id,
+		map[string]any{"action": in.Action, "target_count": count, "device_target_count": len(in.DeviceIDs), "group_ids": in.GroupIDs}); err != nil {
 		write(w, http.StatusInternalServerError, response{"error": "audit_write_failed"})
 		return
 	}
@@ -1786,7 +1938,7 @@ func (s *Server) createJob(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusInternalServerError, response{"error": "job_commit_failed"})
 		return
 	}
-	write(w, http.StatusAccepted, response{"job_id": id, "status": "queued", "target_count": count})
+	write(w, http.StatusAccepted, response{"job_id": id, "status": "queued", "target_count": count, "group_count": len(seenGroups)})
 }
 
 func (s *Server) nextJob(w http.ResponseWriter, r *http.Request) {
@@ -1910,7 +2062,27 @@ func (s *Server) getJob(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusInternalServerError, response{"error": "database_error"})
 		return
 	}
-	write(w, http.StatusOK, response{"job_id": r.PathValue("id"), "action": action, "status": status, "executions": items})
+	groupRows, err := s.db.QueryContext(r.Context(), "SELECT group_id,group_name FROM job_group_targets WHERE job_id=? ORDER BY group_name COLLATE NOCASE", r.PathValue("id"))
+	if err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "job_group_read_failed"})
+		return
+	}
+	defer groupRows.Close()
+	groups := []map[string]any{}
+	for groupRows.Next() {
+		var groupID int64
+		var groupName string
+		if err := groupRows.Scan(&groupID, &groupName); err != nil {
+			write(w, http.StatusInternalServerError, response{"error": "job_group_read_failed"})
+			return
+		}
+		groups = append(groups, map[string]any{"id": groupID, "name": groupName})
+	}
+	if err := groupRows.Err(); err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "job_group_read_failed"})
+		return
+	}
+	write(w, http.StatusOK, response{"job_id": r.PathValue("id"), "action": action, "status": status, "groups": groups, "executions": items})
 }
 
 func decode(w http.ResponseWriter, r *http.Request, target any) bool {
