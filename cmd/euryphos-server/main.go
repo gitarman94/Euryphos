@@ -2708,6 +2708,17 @@ func (s *Server) jobResult(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusConflict, response{"error": "stale_job_claim"})
 		return
 	}
+	// A started acknowledgement may be retried when the agent loses the
+	// response. Treat the same active claim as idempotent and avoid a second
+	// audit event.
+	if state == "running" && currentStatus == "running" {
+		if err := tx.Commit(); err != nil {
+			write(w, http.StatusInternalServerError, response{"error": "job_result_commit_failed"})
+			return
+		}
+		write(w, http.StatusOK, response{"status": "already_recorded"})
+		return
+	}
 
 	terminal := map[string]bool{"succeeded": true, "failed": true, "cancelled": true}
 	if terminal[currentStatus] {
