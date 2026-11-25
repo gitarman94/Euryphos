@@ -83,6 +83,7 @@ func main() {
 
 func routes(s *Server) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /{$}", s.root)
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /login", s.loginPage)
 	mux.HandleFunc("GET /console", s.admin(s.consolePage))
