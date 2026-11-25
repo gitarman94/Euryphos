@@ -114,7 +114,7 @@ The installed default is `EURYPHOS_COOKIE_SECURE=true`. Browser authentication r
 
 The server does not discover or install agents automatically. Each endpoint needs a separately installed Euryphos-Agent, configured with the server URL and enrollment secret. Enrollment creates a pending device; an administrator must approve it before the endpoint's normal heartbeat and inventory operations are accepted.
 
-The agent repository is currently private and does not yet publish supported endpoint installers or signed releases. Its [README](https://github.com/gitarman94/Euryphos-Agent) and [project handoff](https://github.com/gitarman94/Euryphos-Agent/blob/main/docs/PROJECT_HANDOFF.md) describe the current source-build enrollment path and platform limitations.
+The agent repository is currently private. It now contains an initial Linux systemd installer that builds from a source checkout or uses a packaged Linux binary. It prompts for the server URL and hidden enrollment token, installs the agent service, and preserves its device identity during upgrades. This installer has not yet been qualified on real endpoint machines; no versioned release has been published, and there is no Windows installer yet. The enrollment secret is stored in the root-only server file `/etc/euryphos/euryphos.env`; enter it directly into the agent installer and do not share it. See the agent [README](https://github.com/gitarman94/Euryphos-Agent) and [project handoff](https://github.com/gitarman94/Euryphos-Agent/blob/main/docs/PROJECT_HANDOFF.md) for current installation steps and limitations.
 
 ## Project status and next work
 
