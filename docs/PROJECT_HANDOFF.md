@@ -464,27 +464,55 @@ Each OS/release/architecture is independently qualified. Shared package-manager 
 - Logs: systemd journal; inspect with `journalctl -u euryphos`.
 - No Docker, Compose, PostgreSQL, or separate database host.
 
-### Install and upgrade
+### Install, upgrade, uninstall, and clean reinstall
 
 The server repository is public. No GitHub token is needed to retrieve the installer or public source. The separate `Euryphos-Agent` repository is currently private and has no supported endpoint installer/release; endpoint installation remains manual source-build and integration testing work.
 
-**Current test install (run as root inside a Debian 13 systemd CT):**
+All installer actions run as root inside the supported Debian 13 systemd CT. The current installer revision is `2026-11-25.7`; download it by the pinned commit below and verify the revision string before execution.
+
+**Initial install:**
 
 ```bash
-apt-get update && apt-get install -y ca-certificates curl && f="$(mktemp)" && curl --retry 3 --retry-all-errors -fsSL "https://raw.githubusercontent.com/gitarman94/Euryphos/main/scripts/install.sh" -o "$f" && grep -Fq 'INSTALLER_REVISION="2026-11-25.5"' "$f" && bash -n "$f" && EURYPHOS_SOURCE_BUILD=1 bash "$f" install; result=$?; rm -f "${f:-}"; exit "$result"
+apt-get update && apt-get install -y ca-certificates curl && f="$(mktemp)" && curl --retry 3 --retry-all-errors -fsSL "https://raw.githubusercontent.com/gitarman94/Euryphos/39bd57efc27907612e74c26506fe9dc2da8a4522/scripts/install.sh" -o "$f" && grep -Fq 'INSTALLER_REVISION="2026-11-25.7"' "$f" && bash -n "$f" && EURYPHOS_SOURCE_BUILD=1 bash "$f" install; result=$?; [[ -z "${f:-}" ]] || rm -f "$f"; exit "$result"
 ```
 
-With `EURYPHOS_SOURCE_BUILD=1`, the installer installs Debian's `golang-go` package, resolves and pins the current public `main` commit by SHA, downloads that source archive, builds the server for the CT's Linux architecture, and packages the binary, systemd unit, and license locally. It then applies the same SHA-256 package check, atomic versioned installation, secret/config preservation, SQLite backup, service startup, and `/api/health` check as the release path. The Go build toolchain remains installed in the CT. This path is for pre-release testing; it is not an immutable prebuilt release.
+**Upgrade an existing server** (keeps config, administrator/enrollment tokens, and database; takes an integrity-checked pre-upgrade SQLite backup):
 
-The Bash terminal UI runs before apt installs or Go compilation. It checks effective CPU capacity (using `nproc` and cgroup CPU quota when exposed), container RAM (cgroup v2/v1 limit, falling back to `/proc/meminfo` while explicitly warning when the LXC limit is not visible), and total/free bytes on the filesystem containing `/var/lib/euryphos`. It prints `[OK]` and `[WARN]` findings and, when attached to a terminal, asks before continuing with warnings. No Proxmox resource setting is changed automatically. Current initial sizing guidance is 2 vCPU and 2 GiB RAM as a baseline, 4 GiB RAM recommended; disk baseline 10 GiB total/5 GiB free, recommended 20 GiB total/10 GiB free. These are planning recommendations, not a fleet-capacity guarantee.
+```bash
+f="$(mktemp)" && curl --retry 3 --retry-all-errors -fsSL "https://raw.githubusercontent.com/gitarman94/Euryphos/39bd57efc27907612e74c26506fe9dc2da8a4522/scripts/install.sh" -o "$f" && grep -Fq 'INSTALLER_REVISION="2026-11-25.7"' "$f" && bash -n "$f" && EURYPHOS_SOURCE_BUILD=1 bash "$f" upgrade; result=$?; [[ -z "${f:-}" ]] || rm -f "$f"; exit "$result"
+```
 
-After a successful health check, the UI prints CT IP address login URLs, systemd status/log commands, and the path to the root-only token file. The default `EURYPHOS_COOKIE_SECURE=true` means authenticated browser sessions require HTTPS even though the login page can be viewed over the direct HTTP listener. Configure a trusted HTTPS reverse proxy and access `https://<your-hostname>/login`; the installer does not configure DNS, TLS, firewall rules, or the proxy.
+With `EURYPHOS_SOURCE_BUILD=1`, the installer installs Debian's `golang-go`, resolves the current public `main` commit by SHA, downloads that source archive, builds for the CT architecture, and packages the server, systemd unit, and license locally. The Go toolchain remains in the CT. The current pre-release source-build path is for test deployment, not an immutable release.
 
-The normal installer path (without `EURYPHOS_SOURCE_BUILD=1`) downloads the latest published GitHub release, requires the matching Linux amd64/arm64 archive and `SHA256SUMS`, and verifies the release checksum before changing the active installation. **No first versioned release exists yet.** The release workflow builds those assets after a `v*` tag is pushed. After a release is published, the standard command can omit the source-build variable.
+The Bash terminal UI checks effective CPU capacity (including cgroup quota when exposed), container RAM (cgroup v2/v1 limit, falling back to `/proc/meminfo` with a warning when the LXC ceiling is unavailable), and total/free bytes on the filesystem containing `/var/lib/euryphos`. It prints findings before apt or Go build work and prompts before continuing with resource warnings. It does not modify Proxmox resource settings. Baseline guidance: 2 vCPU, 2 GiB RAM, 10 GiB disk with 5 GiB free; recommended starting point: 4 vCPU for larger fleets/concurrent work, 4 GiB RAM, 20 GiB disk with 10 GiB free. These are small-test starting points, not a production capacity guarantee.
 
-For an upgrade, rerun the same source-build command with final argument `upgrade`; this builds the current `main` commit. For a pinned released version, set `EURYPHOS_VERSION=vX.Y.Z` and omit the source-build variable.
+After health check succeeds, the installer prints the CT IP login address, systemd status/log commands, and root-only token file. The default `EURYPHOS_COOKIE_SECURE=true` means authenticated browser sessions require HTTPS even though the HTTP login page can be viewed directly. Configure a trusted HTTPS reverse proxy and access `https://<your-hostname>/login`; the installer does not configure DNS, TLS, firewall rules, or the proxy.
 
-The installer requires root, Debian 13, and systemd. It installs `curl`, `jq`, `sqlite3`, `openssl`, CA certificates, `su` (for service-identity access checks; supplied by Debian's base util-linux package), and (only in source-build mode) `golang-go`. Before stopping anything, it reloads systemd's unit catalogue and checks the service's actual load/active states; an absent, unloaded, inactive, failed, or dead unit is not stopped. After staging, it explicitly sets the version directory and binary permissions and verifies that the `euryphos` account can read and execute the binary before changing the active symlink. This compensates for the installer's restrictive `umask 077`, which otherwise can create a 0700 directory even when `mkdir -m 0755` is requested. Startup uses a non-blocking systemd start, a visible 120-second health-check countdown, and service journal diagnostics on failure. Rollback restarts the previous server only when it was running before the attempted update. The application itself remains one Go server process with embedded SQLite; no database daemon, Docker, or Compose is installed.
+**Uninstall while preserving data:**
+
+```bash
+f="$(mktemp)" && curl --retry 3 --retry-all-errors -fsSL "https://raw.githubusercontent.com/gitarman94/Euryphos/39bd57efc27907612e74c26506fe9dc2da8a4522/scripts/install.sh" -o "$f" && grep -Fq 'INSTALLER_REVISION="2026-11-25.7"' "$f" && bash -n "$f" && bash "$f" uninstall; result=$?; [[ -z "${f:-}" ]] || rm -f "$f"; exit "$result"
+```
+
+This removes the systemd unit and `/opt/euryphos` binaries, but intentionally retains `/etc/euryphos`, `/var/lib/euryphos`, the SQLite database and backups, all tokens, and the `euryphos` service account. A later `install` can reuse this state.
+
+**Full uninstall and data purge:**
+
+```bash
+f="$(mktemp)" && curl --retry 3 --retry-all-errors -fsSL "https://raw.githubusercontent.com/gitarman94/Euryphos/39bd57efc27907612e74c26506fe9dc2da8a4522/scripts/install.sh" -o "$f" && grep -Fq 'INSTALLER_REVISION="2026-11-25.7"' "$f" && bash -n "$f" && bash "$f" uninstall --purge; result=$?; [[ -z "${f:-}" ]] || rm -f "$f"; exit "$result"
+```
+
+**Clean reinstall, deliberately discarding all prior data and secrets:**
+
+```bash
+f="$(mktemp)" && curl --retry 3 --retry-all-errors -fsSL "https://raw.githubusercontent.com/gitarman94/Euryphos/39bd57efc27907612e74c26506fe9dc2da8a4522/scripts/install.sh" -o "$f" && grep -Fq 'INSTALLER_REVISION="2026-11-25.7"' "$f" && bash -n "$f" && EURYPHOS_SOURCE_BUILD=1 bash "$f" reinstall --purge; result=$?; [[ -z "${f:-}" ]] || rm -f "$f"; exit "$result"
+```
+
+Both purge actions require an interactive terminal and the exact typed phrase `DELETE EURYPHOS DATA`. The purge removes `/etc/euryphos`, `/var/lib/euryphos` (SQLite, WAL files, and backups), `/opt/euryphos`, the systemd unit, and the `euryphos` service account. The clean-reinstall mode runs resource pre-flight before asking for destructive confirmation. Purging is irreversible; do not use it for an ordinary upgrade.
+
+The standard release installer (without `EURYPHOS_SOURCE_BUILD=1`) downloads the latest published GitHub release, requires the matching Linux amd64/arm64 archive and `SHA256SUMS`, and verifies the release checksum before changing the active installation. **No first versioned release exists yet.** The release workflow builds those assets after a `v*` tag is pushed.
+
+The installer requires root, Debian 13, and systemd. It installs `curl`, `jq`, `sqlite3`, `openssl`, CA certificates, `su` (for service-identity access checks; supplied by Debian's base util-linux package), and (only in source-build mode) `golang-go`. Before stopping anything, it reloads systemd's unit catalogue and checks the service's actual load/active states; an absent, unloaded, inactive, failed, or dead unit is not stopped. After staging, it explicitly sets the version directory and binary permissions and verifies that the `euryphos` account can read and execute the binary before changing the active symlink. This compensates for the installer's restrictive `umask 077`, which otherwise can create a 0700 directory even when `mkdir -m 0755` is requested. Startup uses a non-blocking systemd start, a visible 120-second health-check countdown, and service journal diagnostics on failure. Rollback restarts the previous server only when it was running before the attempted update. The application remains one Go server process with embedded SQLite; no database daemon, Docker, or Compose is installed.
 
 ### Non-data-destructive upgrade contract
 
