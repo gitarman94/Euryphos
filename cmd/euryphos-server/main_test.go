@@ -318,6 +318,56 @@ func TestSQLiteServerAgentProtocol(t *testing.T) {
 	}
 }
 
+func TestJobAPIReportsOverdueRunningTargetsWithoutChangingExecutionState(t *testing.T) {
+	db, err := openDatabase(filepath.Join(t.TempDir(), "stale-jobs.db"))
+	if err != nil {
+		t.Fatalf("open SQLite database: %v", err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := migrate(ctx, db); err != nil {
+		t.Fatalf("migrate database: %v", err)
+	}
+
+	for _, deviceID := range []string{"device-stale", "device-current"} {
+		if _, err := db.ExecContext(ctx,
+			"INSERT INTO devices(id,status) VALUES(?, 'approved')", deviceID); err != nil {
+			t.Fatalf("insert %s: %v", deviceID, err)
+		}
+	}
+	const jobID = "job-stale-heartbeat"
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO jobs(id,action,payload,status) VALUES(?, 'service.control', '{}', 'running')", jobID); err != nil {
+		t.Fatalf("insert job: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO job_targets(job_id,device_id,status,updated_at)
+		VALUES(?, 'device-stale', 'running', datetime('now','-5 minutes')),
+		      (?, 'device-current', 'running', CURRENT_TIMESTAMP)`, jobID, jobID); err != nil {
+		t.Fatalf("insert job targets: %v", err)
+	}
+
+	handler := securityHeaders(routes(&Server{db: db, adminToken: "admin-test-token", jobStaleAfter: time.Minute}))
+	list := performRequest(t, handler, http.MethodGet, "/api/v1/jobs?page=1&page_size=10", "admin-test-token", "", http.StatusOK)
+	if !strings.Contains(string(list), `"stale_running":1`) {
+		t.Fatalf("job list did not report exactly one overdue running target: %s", list)
+	}
+
+	detail := performRequest(t, handler, http.MethodGet, "/api/v1/jobs/"+jobID, "admin-test-token", "", http.StatusOK)
+	if !strings.Contains(string(detail), `"heartbeat_state":"overdue"`) ||
+		!strings.Contains(string(detail), `"heartbeat_state":"current"`) {
+		t.Fatalf("job detail did not distinguish overdue and current heartbeats: %s", detail)
+	}
+	var running int
+	if err := db.QueryRowContext(ctx,
+		"SELECT count(*) FROM job_targets WHERE job_id=? AND status='running'", jobID).Scan(&running); err != nil {
+		t.Fatalf("query execution state: %v", err)
+	}
+	if running != 2 {
+		t.Fatalf("stale heartbeat indicator changed real execution state; running targets=%d, want 2", running)
+	}
+}
+
 func TestJobClaimsRejectStaleResultsAndAcceptDuplicateTerminalResults(t *testing.T) {
 	db, err := openDatabase(filepath.Join(t.TempDir(), "job-claims.db"))
 	if err != nil {
