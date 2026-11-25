@@ -1250,3 +1250,16 @@ The core loop must be reliable and measurable:
 **Discover → Normalize → Search → Target → Approve → Dispatch → Execute → Verify → Audit → Report**
 
 Every major feature should fit this loop, use the shared identity and policy model, and expose its outcome. The project is complete only when this loop works end-to-end across the supported fleet at the agreed scale and security level.
+
+
+## Current compact SQLite/data-management implementation
+
+Implementation status as of 2026-11-25:
+
+- **Device row:** one record per computer; unique SQLite-generated `database_id`, plus existing agent-facing UUID `id`. Scalar inventory fields are typed columns. Existing databases receive new columns through the server migration routine.
+- **Repeating facts:** network interfaces and installed software use indexed child tables. Latest categorized JSON is retained for extensibility. Change history is only appended when the category payload changes.
+- **Duplicate handling:** SMBIOS UUID or serial + manufacturer + model produces reviewable high-confidence candidates. Merging is administrator initiated and preserves source history/normalized child data and old agent-token continuity. No silent merges.
+- **Audit:** the initial `audit_log` records authentication success/failure, enrollment, approval/revocation, group changes, jobs/results, and merges. Compliance-grade retention/tamper protection and fine-grained read/export auditing remain future work.
+- **Machine groups:** static groups support direct membership; dynamic groups use allowlisted rules over OS/distribution and common Windows AD/Linux SSSD/realmd directory fields. Rule predicates are parameterized and evaluated in SQLite.
+
+All these workstreams remain subject to the plan's broader release gate: complete platform coverage, authorization review, live server-agent integration, recovery tests, and fleet-scale performance tests.
