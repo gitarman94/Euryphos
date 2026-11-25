@@ -60,7 +60,8 @@ This repository currently includes:
 
 ### Not implemented or not production-ready
 
-- A complete operator dashboard or finished administration experience.
+- **No browser web UI is implemented yet:** there are no dashboard, Devices-list, or device-detail pages, no frontend templates/assets, and no browser login/session workflow.
+- A dedicated `GET /api/v1/devices/{id}` detail endpoint and inventory/activity retrieval APIs are not implemented. The current list endpoint exposes only a small summary and does not provide all fields in the device-management specification.
 - Full hardware, service, security, and configuration inventory providers.
 - Functional patch installation, software deployment/removal, configuration enforcement, and most privileged job executors.
 - Production server installers, signed release artifacts, and tested upgrade/backup/restore procedures.
