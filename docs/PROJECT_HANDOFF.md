@@ -63,7 +63,10 @@ These decisions come from the project owner and must not be silently changed:
 - `cmd/euryphos-server/ui.go` — Go-served browser console and UI assets.
 - `cmd/euryphos-server/main_test.go` — SQLite-backed server integration and regression tests.
 - SQLite schema creation and compatibility upgrades are defined in `migrate()` and its helpers in `cmd/euryphos-server/main.go`. This is the single canonical schema source; there is no separate SQL migration file.
-- `Dockerfile`, `docker-compose.yml` — server-only container deployment.
+- `scripts/install.sh` — root-run Debian 13 Proxmox CT installer/updater; downloads and verifies GitHub release assets, preserves configuration, backs up SQLite, and rolls back a failed upgrade.
+- `deploy/euryphos.service` — native systemd unit for the unprivileged `euryphos` account.
+- `.github/workflows/release.yml` — validates tagged source and publishes Linux amd64/arm64 release archives with SHA-256 checksums.
+- There is no Dockerfile, Docker Compose deployment, standalone SQL migration file, or separate database service.
 - `go.mod`, `go.sum` — Go module and dependency lock.
 - `README.md` — concise repository landing page.
 - `docs/PROJECT_HANDOFF.md` — this detailed context/roadmap file.
@@ -114,7 +117,7 @@ Backups must use SQLite's online backup API or a tested quiesced procedure. A li
 - `jobs`, `job_targets`, `job_group_targets`: parent jobs, per-device execution state, and immutable group-selection snapshots.
 - `audit_log`: initial operational events.
 - `admin_sessions`: hashed server-side browser sessions and CSRF material.
-- `schema_migrations`: startup schema marker table. The current Go migrator applies an idempotent create/ensure schema routine and records markers through version **12**; it is not yet a sequence of independently executed per-version migration functions. The next database-engineering task is to make schema changes explicit, ordered Go migrations (or consciously retain a single idempotent reconciler) without maintaining a second SQL copy.
+- `schema_migrations`: startup schema marker table. The schema is defined only in Go in `migrate()`; there is no standalone SQL migration file or second schema copy. The current startup routine creates missing tables and indexes and additively adds missing columns, with markers through version **12**. This is intentionally an in-code, idempotent schema initializer for the ground-up product. Future upgrades must preserve existing device rows, identifiers, credentials, inventory, groups, memberships, jobs, job outcomes, audit records, and sessions. Do not drop, truncate, recreate, or reset populated tables during an ordinary application upgrade. Any non-additive data transformation requires an explicit tested conversion and a verified backup/restore path before it can ship.
 
 JSON is retained for extensible provider payloads, not as a substitute for typed columns on frequently queried facts. Never create columns from arbitrary client-supplied field names. Timestamps are stored in UTC. Child-table replacement must respect collection status: unsupported, unavailable, failed, or permission-denied collection must not erase last-known good records.
 
@@ -368,7 +371,9 @@ Store updates per device with source, version, applicability, severity, timestam
 
 ### P6 — Installers, releases, and operations
 
-**Server first target:** Debian 13 Proxmox LXC. Build a signed/versioned Go server release and checksum manifest; create a dedicated unprivileged service account, systemd unit, secure configuration, `/var/lib/euryphos/` SQLite path, TLS/reverse-proxy guidance, health/log/diagnostic handling, safe migrations, online backup, restore, update, repair, rollback, and uninstall. Test fresh install, upgrade, reboot, backup/restore, failure recovery, and removal in disposable Debian 13 CTs. Do not publish production `curl | bash` until signature and installer tests pass.
+**Server first target — implementation started:** the repository now contains a Debian 13-only Proxmox CT installer/updater at `scripts/install.sh`, a systemd unit at `deploy/euryphos.service`, and a tag-triggered release workflow at `.github/workflows/release.yml`. GitHub releases contain static Go server archives for Linux amd64/arm64 and a SHA-256 manifest. Installation creates the `euryphos` unprivileged account, keeps configuration at `/etc/euryphos/euryphos.env`, stores SQLite at `/var/lib/euryphos/euryphos.db`, and runs directly under systemd. Upgrade stages a versioned binary, stops the service, creates and integrity-checks a SQLite backup, atomically switches the binary, and health-checks startup. A failed upgrade restores the previous binary and the pre-upgrade database. The server now handles SIGTERM/SIGINT with graceful HTTP shutdown and closes SQLite before systemd completes stopping it.
+
+**Still required before calling this deployment production-ready:** run the installer script syntax check and release workflow; publish a first tagged release; execute fresh install, repeat install, in-place upgrade with populated device/inventory/group/job/audit data, a deliberately failed upgrade and rollback, reboot/startup, manual backup/restore, and disk-full/backup-failure cases in disposable Debian 13 Proxmox CTs. Confirm credentials and device tokens remain unchanged. Add cryptographic release signing/provenance verification; the initial installer currently validates SHA-256 checksums but does not establish a separate signing trust root. Do not add Docker or Docker Compose deployment files.
 
 **Linux agent:** signed immutable Go releases and checksum manifest; client-only installers/service lifecycle for Arch/CachyOS, Debian/Ubuntu/Mint/LMDE, Fedora/Nobara, and a separate image-aware Bazzite/rpm-ostree approach. Preserve config/credentials on upgrade; support repair/uninstall/rollback.
 
@@ -405,17 +410,74 @@ Each OS/release/architecture is independently qualified. Shared package-manager 
 
 ## 11. Server deployment configuration reference
 
-Current environment configuration (confirm against source before release):
+### Debian 13 Proxmox CT layout
 
-- `EURYPHOS_LISTEN` — HTTP listen address; development default `:8080`.
-- `EURYPHOS_DB_PATH` — SQLite file; development default `./data/euryphos.db`; production target under `/var/lib/euryphos/euryphos.db`.
-- `EURYPHOS_ADMIN_TOKEN` — required administrator bearer secret; no production default.
-- `EURYPHOS_ENROLLMENT_TOKEN` — required enrollment secret; no production default.
-- `EURYPHOS_AUTO_MIGRATE` — initial migration toggle, currently default true.
+- Binary releases: `/opt/euryphos/releases/<version>-<checksum>/euryphos-server`.
+- Active binary: `/opt/euryphos/current/euryphos-server` (atomic symlink).
+- systemd unit: `/etc/systemd/system/euryphos.service`; use systemd drop-ins for local overrides rather than editing the release-managed unit.
+- Root-only configuration: `/etc/euryphos/euryphos.env` (mode 0600). Upgrades must never regenerate or overwrite this file.
+- Persistent state: `/var/lib/euryphos/euryphos.db`; SQLite WAL sidecars live beside it.
+- Pre-upgrade backups: `/var/lib/euryphos/backups/`, root-only and integrity-checked.
+- Service identity: unprivileged `euryphos:euryphos`.
+- Logs: systemd journal; inspect with `journalctl -u euryphos`.
+- No Docker, Compose, PostgreSQL, or separate database host.
+
+### Install and upgrade
+
+The repository is private, so the bootstrap command must retrieve `scripts/install.sh` with a fine-grained GitHub token that has Contents: read for this repository. The installer then uses the same token to download release metadata and assets. Do not save the GitHub token in the Euryphos environment file.
+
+Run as root inside Debian 13 CT:
+
+```bash
+apt-get update && apt-get install -y ca-certificates curl
+read -rsp "GitHub read-only token: " GITHUB_TOKEN
+printf '\n'
+export GITHUB_TOKEN
+curl -fsSL \
+  -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+  -H "Accept: application/vnd.github.raw" \
+  "https://api.github.com/repos/gitarman94/Euryphos/contents/scripts/install.sh?ref=main" \
+  | GITHUB_TOKEN="${GITHUB_TOKEN}" bash -s -- install
+unset GITHUB_TOKEN
+```
+
+For an upgrade, rerun the same command with final argument `upgrade`. Set `EURYPHOS_VERSION=vX.Y.Z` to pin a release. Push a `v*` tag only after CI passes; the release workflow checks source, cross-builds Linux amd64/arm64, archives the binary + systemd unit + license, and uploads `SHA256SUMS`. A published release is required for the installer.
+
+The installer requires root, Debian 13, and systemd. It installs deployment utilities `curl`, `jq`, `sqlite3`, `openssl`, and CA certificates. The application itself remains a single Go server process using embedded SQLite; no database daemon is installed.
+
+On first installation the script generates `EURYPHOS_ADMIN_TOKEN` and `EURYPHOS_ENROLLMENT_TOKEN` and writes them once to the root-only environment file. It sets:
+- `EURYPHOS_LISTEN=:8080`.
+- `EURYPHOS_DB_PATH=/var/lib/euryphos/euryphos.db`.
+- `EURYPHOS_AUTO_MIGRATE=true`.
+- `EURYPHOS_COOKIE_SECURE=true`.
+- `EURYPHOS_ONLINE_GRACE_SECONDS=90`.
+
+Existing values remain unchanged during upgrades. `EURYPHOS_LISTEN` must end in a TCP port for the installer health check. The standard DB path must remain under `/var/lib/euryphos` so the systemd service can write to it and automatic backup/rollback can protect it.
+
+### Non-data-destructive upgrade contract
+
+1. Download and checksum-verify the release before stopping the active service.
+2. Stop systemd service and wait for process exit; the server handles SIGTERM/SIGINT, finishes active HTTP requests within its graceful timeout, and closes SQLite.
+3. Use the SQLite backup API via `sqlite3 .backup` to create a consistent pre-upgrade snapshot; validate it with `PRAGMA integrity_check`.
+4. Never overwrite the live DB, config file, generated tokens, or agent device credentials as part of binary installation.
+5. Install the release into a new immutable version directory and switch `current` using an atomic symlink rename.
+6. Start the service and verify `GET /api/health` locally.
+7. If startup/health fails, stop the new process, restore the prior symlink and service unit, remove stale WAL/SHM sidecars, restore the SQLite backup, and restart the old version.
+8. Keep the pre-upgrade backup for manual recovery even after a successful upgrade.
+
+A version's Go schema initializer may only make compatible additive changes automatically. Never use an application upgrade to wipe/reseed populated data. Before shipping any schema change, test it against a copy of a populated prior-version DB and prove devices, credentials, history, groups, jobs, audit, and sessions are preserved.
+
+### Environment configuration
+
+- `EURYPHOS_LISTEN` — HTTP listen address; default `:8080`.
+- `EURYPHOS_DB_PATH` — SQLite file; installer default `/var/lib/euryphos/euryphos.db`.
+- `EURYPHOS_ADMIN_TOKEN` — generated first-install admin bearer secret; never rotate automatically.
+- `EURYPHOS_ENROLLMENT_TOKEN` — generated first-install enrollment secret; never rotate automatically.
+- `EURYPHOS_AUTO_MIGRATE` — Go schema initialization/compatibility upgrade toggle; default true.
 - `EURYPHOS_ONLINE_GRACE_SECONDS` — server-derived online grace, default 90, allowed 15–3600 seconds.
-- `EURYPHOS_COOKIE_SECURE` — secure cookie behavior; defaults true. Only disable for trusted local HTTP development.
+- `EURYPHOS_COOKIE_SECURE` — secure cookie behavior; installed default true.
 
-Never expose unencrypted HTTP directly to untrusted networks. Terminate TLS at a correctly configured trusted proxy or use a hardened TLS server deployment. Forwarded client-IP headers must be honored only from configured trusted proxies.
+Never expose unencrypted HTTP directly to untrusted networks. Terminate TLS at a correctly configured trusted proxy. Forwarded client-IP headers must be honored only from explicitly configured trusted proxies.
 
 ## 12. AI continuation and change-control instructions
 
@@ -434,7 +496,11 @@ When continuing this work after chat history loss:
 
 ### Immediate next task
 
-**First verify current CI on both repositories.** The last passing server run predates the job-lease/recovery changes and latest reserved-name checks. The latest agent run failed on the reserved `systemctl` name; the code and test were fixed afterward, but no passing rerun is confirmed. Once green, move directly to a real server/agent vertical test and strengthen job acknowledgement/lease/attempt/idempotency behavior before implementing patch discovery.
+1. Verify the latest server CI after the installer, unit, release workflow, and graceful-shutdown edits; ensure the install script passes `bash -n`.
+2. Publish a version tag only after the source/release workflow passes, then confirm the release contains both architecture archives and `SHA256SUMS`.
+3. Test the complete install/upgrade/rollback workflow in a disposable Debian 13 Proxmox CT with populated data. Include a deliberately failed update and compare the restored DB plus admin/enrollment/device credentials.
+4. Once server deployment is proven, run a real server + agent end-to-end test (enrollment, approval, heartbeat, all inventory categories, job receipt, service action/result, disconnect/reconnect) before broadening endpoint actions.
+5. Keep patch discovery and installation behind reliable job acknowledgements, leases, attempts, idempotency, and action auditing.
 
 ---
 
