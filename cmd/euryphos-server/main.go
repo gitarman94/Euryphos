@@ -980,7 +980,7 @@ func (s *Server) recordDuplicateCandidates(ctx context.Context, tx *sql.Tx, devi
 		FROM devices
 		WHERE id<>? AND merged_into IS NULL AND status<>'merged'
 		AND ((?<>'' AND lower(replace(replace(replace(replace(smbios_uuid,'-',''),'{',''),'}',''),' ',''))=?)
-		OR (?<>'' AND ?<>'' AND ?<>'' AND lower(trim(serial_number))=? AND lower(trim(manufacturer))=? AND lower(trim(model))=?))`,
+		OR (?<>'' AND ?<>'' AND ?<>'' AND lower(trim(serial_number))=lower(?) AND lower(trim(manufacturer))=lower(?) AND lower(trim(model))=lower(?)))`,
 		deviceID,uuidValue,uuidValue,deviceID,uuidValue,uuidValue,serial,manufacturer,model,serial,manufacturer,model)
 	return err
 }
