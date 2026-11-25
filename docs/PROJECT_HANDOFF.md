@@ -207,7 +207,22 @@ The job lifecycle is still **not** exactly-once execution or a complete retry sy
 
 ### Browser console
 
-The initial console is served at `/login` and `/console`. Current views include fleet overview, Devices, device detail, duplicate review/merge, Groups, Jobs/per-device outcomes, and Audit. Device detail includes system/category payloads and normalized network interfaces, disks, volumes, and services. The UI is an initial operator foundation, not a completed enterprise UX.
+The initial console is served at `/login` and `/console`. Current views include fleet overview, Devices, device detail, duplicate review/merge, Groups, Jobs/per-device outcomes, and Audit. Device detail includes system/category payloads and normalized network interfaces, disks, volumes, and services. There is no Performance page yet. The UI is an initial operator foundation, not a completed enterprise UX.
+
+### Inventory and performance telemetry boundary
+
+The endpoint agent has real collection and upload paths for five inventory categories: `system`, `network`, `storage`, `services`, and `software`. It sends each category in a separate authenticated `POST /api/v1/devices/{id}/inventory` request. The server stores the latest category payload and append-only change snapshots, and normalizes selected system/network/storage/service/software facts for queries and device detail. Full inventory runs on a 15-minute default cadence; `inventory.refresh` requests a full upload.
+
+This is **inventory**, not live performance monitoring. Existing system fields include CPU identity/core counts, total and available memory, uptime, and root-volume capacity/free space. They do not provide CPU utilization time series, memory pressure/usage history, load average, disk I/O throughput/latency, network throughput, or process resource usage. The current API has no metrics ingestion endpoint, metrics table, or metrics query endpoint, and the UI has no Performance page.
+
+The planned Performance experience must be backed by a separate telemetry pipeline rather than overloading inventory snapshots. The design should include:
+- Agent samples with timestamps and collection-quality/status metadata for CPU utilization, memory and swap use, platform load/pressure indicators where supported, per-disk I/O counters/rates, and per-interface network counters/rates.
+- Correct counter-delta handling for first samples, resets, device/interface changes, suspend/resume, and unavailable permissions. Do not invent zeroes for missing readings.
+- A bounded, authenticated batch-ingestion API and dedicated SQLite time-series tables, with indexes, configurable retention, and down-sampled rollups. Keep sampling frequency and payload sizes bounded; do not write a row every heartbeat.
+- A Performance navigation section for fleet-wide health/heatmaps and per-device historical charts, plus clear stale, unsupported, and collection-error states. Optional process-level/top-process data requires explicit privacy and collection controls.
+- Real end-to-end agent/server tests and storage/overhead measurements before enabling charts by default.
+
+Do not add a visible placeholder page or sample chart before the metrics pipeline supplies real, timestamped data.
 
 ## 6. Current server API surface
 
@@ -277,7 +292,15 @@ The corresponding agent commits are `f8122ac58801f8e286ac7e30c2a1989e4d2aa5b3`, 
 These are CI results, not evidence of a live Debian 13 installation or a real endpoint operation.
 ### What has not been demonstrated
 
-No real running server + installed agent end-to-end test has been completed. No actual Linux or Windows service operation has been runtime-tested. Cross-compilation does not certify runtime compatibility. No first tagged GitHub server release has been published, and no fresh install, in-place upgrade, failed-upgrade rollback, reboot, or database restore has been tested in a Debian 13 Proxmox CT. Cryptographic release signing/provenance, fleet load benchmarks, penetration testing, and supported-OS certification remain incomplete.
+No real running server + installed agent end-to-end test has been completed. No actual Linux or Windows service operation has been runtime-tested. Cross-compilation does not certify runtime compatibility. No first tagged GitHub server release has been published. A Debian 13 Proxmox CT fresh install passed its local health check with installer revision `2026-11-25.4`; an upgrade using revision `2026-11-25.7` has now also completed and its local service health was verified, but populated-data preservation, backup contents, failed-upgrade rollback, reboot recovery, and restore have not yet been independently validated. Cryptographic release signing/provenance, fleet load benchmarks, penetration testing, and supported-OS certification remain incomplete.
+
+### Current operator CT — 2026-11-25
+
+The operator reports the test CT is configured with 4 vCPU, 4 GiB RAM, and a 20 GB disk. The revision `2026-11-25.7` upgrade completed with the installer reporting that the service was active and passed its local health check. Follow-up verification returned `systemctl is-active=euryphos`, `ActiveState=active`, `SubState=running`, `NRestarts=0`, and `GET /api/health` returned `{"database":"sqlite","runtime":"go","service":"Euryphos","status":"ok"}`. A token-safe local API check using the configured administrator bearer returned HTTP 200, and the operator subsequently confirmed browser login works.
+
+For this LAN-only browser test, the operator temporarily changed `EURYPHOS_COOKIE_SECURE=false` because a Secure cookie is not sent by browsers over plain HTTP. The setting is currently a temporary insecure exception, not a production configuration. Restore `EURYPHOS_COOKIE_SECURE=true` after configuring and testing a trusted HTTPS reverse proxy; do not expose the raw HTTP listener outside a trusted isolated network. The current server has no enrolled endpoints yet.
+
+The revision .7 installer upgrade and service health are verified. Do not claim that pre/post token equality, a populated-data upgrade, the SQLite backup/restore path, proxy/TLS, or purge lifecycle have been tested unless separate evidence is recorded.
 
 When writing status, distinguish:
 - source code exists;
@@ -403,11 +426,13 @@ Store updates per device with source, version, applicability, severity, timestam
 - Typed catalog for service actions (initial executor exists but remains CI/runtime gated), reboot/shutdown, diagnostics, and later approved automation packages.
 - Do not add arbitrary shell as an unrestricted job type.
 
-### P5 — Inventory, console, and reporting
+### P5 — Inventory, performance telemetry, console, and reporting
 
 - Complete missing inventory domains listed in Section 8, prioritizing high-value fleet queries and safe provider behavior.
+- Implement a separate, versioned agent performance-sampling contract and server metrics ingestion/query API. Start with CPU utilization, memory/swap use, load/pressure where supported, disk I/O, and network throughput/error counters; treat process-level detail as an explicit privacy-controlled option.
+- Store bounded timestamped samples in dedicated SQLite tables, handle counter resets and collection gaps, define retention/down-sampling, and measure agent/server overhead before setting a default sample cadence.
+- Add a real Performance navigation section with fleet summary, device-level time-series charts, time-range selection, freshness/status indicators, and explicit unsupported/unavailable states. Do not render fabricated or placeholder telemetry.
 - Finish Devices columns/search/filter/sort, detail sections, freshness/error states, bulk-target preview, visual dynamic-rule builder, comparison/baseline, live job console, and audit/activity.
-- Add actual metrics sampling and bounded time-series retention before charts.
 - Add reports, sensitive exports with RBAC/audit, compliance evidence, policy/drift reports.
 - Keep all counts and views backed by real server queries.
 
@@ -557,11 +582,12 @@ When continuing this work after chat history loss:
 
 ### Immediate next task
 
-1. Run installer revision `2026-11-25.7` against the existing test CT using `upgrade`; verify the resource pre-flight, printed web URL, preserved admin/enrollment tokens, SQLite backup, healthy service, and unchanged data. Then test data-preserving uninstall/reinstall; exercise `uninstall --purge` and `reinstall --purge` only in a disposable CT and verify they require the exact confirmation phrase and create new tokens/database. Continue with forced failed-upgrade rollback, reboot persistence, manual SQLite restore, and disk-full/backup-failure cases.
-2. Run the complete server-agent workflow on disposable Linux and Windows VMs, including enrollment, inventory, typed service-control execution, heartbeat loss, agent/server restart, result retry, stale claims, overdue alerts, and manual resolution.
-3. Finish public/reproducible agent distribution and installer work, including deciding when the private agent repository is ready to become public.
-4. Publish the first tagged server release only after the CT install/upgrade/rollback path is qualified.
-5. Keep patch discovery and installation deferred until the real Linux/Windows job lifecycle and recovery behavior is verified.
+1. Run the agent from the private `Euryphos-Agent` repository on one disposable Linux endpoint: enroll it against the test CT, approve the pending device in the console, confirm the heartbeat, and verify all five uploaded inventory categories, their observation times, normalized server records, and device-detail display. Then run `inventory.refresh` and one safe service-control operation; preserve logs and exact OS/commit evidence. No agent has been enrolled on the operator's CT yet.
+2. Repeat the real server-agent vertical slice on a disposable Windows VM. Test restart, network loss, stale claims, overdue review, result reporting, and revocation.
+3. Complete the remaining CT lifecycle qualification: independently verify pre/post token preservation, SQLite backup contents and restore, data-preserving uninstall/reinstall, failed-upgrade rollback, reboot persistence, and disk-full/backup-failure handling. Test purge only in a disposable CT.
+4. Implement the distinct performance telemetry collection/ingestion/storage path and only then add the Performance UI. Keep this separate from 15-minute inventory snapshots and the 30-second heartbeat.
+5. Finish reproducible agent releases/installers and decide when the currently private agent repository is ready to become public. Publish the first tagged server release only after deployment qualification.
+6. Keep patch discovery and installation deferred until real Linux/Windows collection and job lifecycle behavior is verified.
 ---
 
 ## 13. Product completion definition
