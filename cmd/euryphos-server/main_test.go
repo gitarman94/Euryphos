@@ -382,10 +382,10 @@ func TestDuplicateDetectionFallsBackToSerialManufacturerModel(t *testing.T) {
 	defer cancel()
 	if err := migrate(ctx, db); err != nil { t.Fatal(err) }
 	_, err = db.Exec("INSERT INTO devices(id,manufacturer,model,serial_number,smbios_uuid) VALUES(?,?,?,?,?)",
-		"serial-canonical", "Acme", "Widget", "SER-123", "")
+		"serial-canonical", "Acme", "Widget", "ser-123", "")
 	if err != nil { t.Fatal(err) }
 	_, err = db.Exec("INSERT INTO devices(id,manufacturer,model,serial_number,smbios_uuid) VALUES(?,?,?,?,?)",
-		"serial-duplicate", "ACME", "Widget", "ser-123", "")
+		"serial-duplicate", "ACME", "Widget", "SER-123", "")
 	if err != nil { t.Fatal(err) }
 	_, err = db.Exec("INSERT INTO devices(id,manufacturer,model,serial_number,smbios_uuid) VALUES(?,?,?,?,?)",
 		"placeholder-one", "OEM", "Default String", "To be filled by O.E.M.", "00000000-0000-0000-0000-000000000000")
