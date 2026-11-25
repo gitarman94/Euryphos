@@ -14,7 +14,7 @@ DATA_DIR="/var/lib/euryphos"
 BACKUP_DIR="${DATA_DIR}/backups"
 SERVICE="euryphos.service"
 MODE="${1:-install}"
-INSTALLER_REVISION="2026-11-25.3"
+INSTALLER_REVISION="2026-11-25.4"
 
 log() { printf '[euryphos] %s\n' "$*"; }
 die() { printf '[euryphos] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -204,8 +204,22 @@ if [[ ! -d "$NEW_RELEASE" ]]; then
   [[ "$(cat "${STAGE_DIR}/VERSION")" == "$VERSION" ]] || { rm -rf "$STAGE_DIR"; die "Release archive version does not match the GitHub release tag."; }
   chmod 0755 "${STAGE_DIR}/euryphos-server"
   chown -R root:root "$STAGE_DIR"
+  # The installer runs with umask 077; explicitly restore traversal permissions
+  # after staging so the unprivileged systemd account can enter the release.
+  chmod 0755 "$STAGE_DIR"
   mv "$STAGE_DIR" "$NEW_RELEASE"
 fi
+
+# Also repair a previously staged release that was created with the restrictive
+# umask by an earlier installer revision. The executable bit alone is not enough:
+# every parent directory must be searchable by the service account.
+chmod 0755 "$INSTALL_ROOT" "$RELEASES_DIR" "$NEW_RELEASE"
+chmod 0755 "${NEW_RELEASE}/euryphos-server"
+chown root:root "$NEW_RELEASE" "${NEW_RELEASE}/euryphos-server"
+if ! su -s /bin/sh euryphos -c 'test -x "$1" && test -r "$1"' sh "${NEW_RELEASE}/euryphos-server"; then
+  die "The euryphos service account cannot traverse to or execute the staged server binary; refusing to switch the active installation."
+fi
+log "Verified that the euryphos service account can access the server binary."
 
 OLD_TARGET="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
 if [[ -e "$CURRENT_LINK" && ! -L "$CURRENT_LINK" ]]; then
