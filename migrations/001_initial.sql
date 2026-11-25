@@ -14,6 +14,8 @@ CREATE TABLE IF NOT EXISTS devices (
     status TEXT NOT NULL DEFAULT 'pending',
     token_hash TEXT,
     last_seen TEXT,
+    first_connected_at TEXT,
+    last_connected_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -65,4 +67,6 @@ CREATE INDEX IF NOT EXISTS idx_job_targets_device_status ON job_targets(device_i
 CREATE INDEX IF NOT EXISTS idx_jobs_status_created ON jobs(status, created_at);
 
 INSERT OR IGNORE INTO schema_migrations(version) VALUES (1);
+INSERT OR IGNORE INTO schema_migrations(version) VALUES (2);
+INSERT OR IGNORE INTO schema_migrations(version) VALUES (3);
 INSERT OR IGNORE INTO schema_migrations(version) VALUES (2);
