@@ -301,3 +301,4 @@ INSERT OR IGNORE INTO schema_migrations(version) VALUES (8);
 INSERT OR IGNORE INTO schema_migrations(version) VALUES (9);
 INSERT OR IGNORE INTO schema_migrations(version) VALUES (10);
 INSERT OR IGNORE INTO schema_migrations(version) VALUES (11);
+INSERT OR IGNORE INTO schema_migrations(version) VALUES (12);
