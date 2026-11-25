@@ -1,16 +1,20 @@
-# Commercial and organizational licensing
+# Personal and corporate licensing
 
-Euryphos is made available for free personal use under the **Euryphos Personal Use License (EPUL) 1.0**.
+Euryphos is source-available under the **Euryphos Personal Use License (EPUL) 1.0**.
 
-## Personal use
+## Free personal use
 
-An individual may use, build, and modify Euryphos at no charge for that individual's own personal devices, home lab, hobby, or self-directed learning, provided the use is not performed for or on behalf of an organization.
+An individual may download, build, run, and modify Euryphos free of charge for that individual's own personal devices, home lab, hobby, or self-directed learning. The use must not be for or on behalf of a company or business.
 
-## Business and organizational use
+## Corporate and business use
 
-A separate written commercial license is required before Euryphos is used by or on behalf of a company, business, government body, nonprofit, school, university, agency, or other organization. This includes managing an organization's computers, servers, or infrastructure, internal business operations, customer-facing services, consulting, and managed-service deployments.
+A separate written commercial license is required before a company, corporation, partnership, LLC, sole proprietorship, or other for-profit business uses Euryphos. This includes internal management of company devices and infrastructure, customer-facing use, consulting, managed services, and use by employees or contractors acting for a business.
 
-The requirement applies even when the operator is an individual employee or contractor, and regardless of whether the deployment directly generates revenue.
+The requirement applies even when the deployment is internal or does not directly generate revenue.
+
+## Other institutional situations
+
+The free personal-use grant is for individuals, not institutions. Public-sector, charitable, nonprofit, educational, and other institutional use that is not clearly personal or corporate use requires written permission or a separate written license from the applicable rights holder before deployment.
 
 ## How to request a commercial license
 
