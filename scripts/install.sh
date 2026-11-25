@@ -32,7 +32,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends ca-certificates curl jq openssl sqlite3
 
-for command_name in curl jq openssl sqlite3 sha256sum systemctl; do
+for command_name in curl jq openssl sqlite3 sha256sum systemctl su; do
   command -v "$command_name" >/dev/null 2>&1 || die "Required command not found after package installation: $command_name"
 done
 
