@@ -377,8 +377,92 @@ func (s *Server) inventory(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.db.QueryContext(r.Context(), `SELECT id, hostname, os_family, os_version, status, last_seen
-		FROM devices ORDER BY hostname LIMIT 2000`)
+	page := 1
+	pageSize := 50
+	if raw := r.URL.Query().Get("page"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 1000000 {
+			write(w, http.StatusBadRequest, response{"error": "invalid_page"})
+			return
+		}
+		page = parsed
+	}
+	if raw := r.URL.Query().Get("page_size"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 200 {
+			write(w, http.StatusBadRequest, response{"error": "invalid_page_size", "max": 200})
+			return
+		}
+		pageSize = parsed
+	}
+	search := strings.TrimSpace(r.URL.Query().Get("q"))
+	if len(search) > 200 {
+		write(w, http.StatusBadRequest, response{"error": "search_too_long", "max": 200})
+		return
+	}
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	if status != "" && status != "pending" && status != "approved" && status != "revoked" {
+		write(w, http.StatusBadRequest, response{"error": "invalid_status_filter"})
+		return
+	}
+	osFamily := strings.TrimSpace(r.URL.Query().Get("os_family"))
+	if len(osFamily) > 40 {
+		write(w, http.StatusBadRequest, response{"error": "invalid_os_family_filter"})
+		return
+	}
+	sortField := r.URL.Query().Get("sort")
+	sortColumns := map[string]string{
+		"hostname": "hostname",
+		"os_family": "os_family",
+		"os_version": "os_version",
+		"status": "status",
+		"last_seen": "last_seen",
+		"created_at": "created_at",
+	}
+	if sortField == "" {
+		sortField = "hostname"
+	}
+	sortColumn, ok := sortColumns[sortField]
+	if !ok {
+		write(w, http.StatusBadRequest, response{"error": "invalid_sort_field"})
+		return
+	}
+	sortDirection := strings.ToUpper(r.URL.Query().Get("direction"))
+	if sortDirection == "" {
+		sortDirection = "ASC"
+	}
+	if sortDirection != "ASC" && sortDirection != "DESC" {
+		write(w, http.StatusBadRequest, response{"error": "invalid_sort_direction"})
+		return
+	}
+
+	where := []string{"1 = 1"}
+	args := []any{}
+	if search != "" {
+		escaped := strings.NewReplacer("\\", "\\\\", "%", "\\%", "_", "\\_").Replace(search)
+		pattern := "%" + escaped + "%"
+		where = append(where, "(hostname LIKE ? ESCAPE '\\' OR os_family LIKE ? ESCAPE '\\' OR os_version LIKE ? ESCAPE '\\')")
+		args = append(args, pattern, pattern, pattern)
+	}
+	if status != "" {
+		where = append(where, "status = ?")
+		args = append(args, status)
+	}
+	if osFamily != "" {
+		where = append(where, "os_family = ?")
+		args = append(args, osFamily)
+	}
+	whereSQL := strings.Join(where, " AND ")
+	var total int
+	if err := s.db.QueryRowContext(r.Context(), "SELECT count(*) FROM devices WHERE "+whereSQL, args...).Scan(&total); err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "database_error"})
+		return
+	}
+	offset := (page - 1) * pageSize
+	queryArgs := append(append([]any{}, args...), pageSize, offset)
+	query := "SELECT id, hostname, os_family, os_version, status, last_seen FROM devices WHERE " +
+		whereSQL + " ORDER BY " + sortColumn + " " + sortDirection + ", id ASC LIMIT ? OFFSET ?"
+	rows, err := s.db.QueryContext(r.Context(), query, queryArgs...)
 	if err != nil {
 		write(w, http.StatusInternalServerError, response{"error": "database_error"})
 		return
@@ -386,22 +470,25 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	items := []map[string]any{}
 	for rows.Next() {
-		var id, hostname, osFamily, osVersion, status string
+		var id, hostname, osFamilyValue, osVersion, deviceStatus string
 		var lastSeen sql.NullString
-		if err := rows.Scan(&id, &hostname, &osFamily, &osVersion, &status, &lastSeen); err != nil {
+		if err := rows.Scan(&id, &hostname, &osFamilyValue, &osVersion, &deviceStatus, &lastSeen); err != nil {
 			write(w, http.StatusInternalServerError, response{"error": "database_error"})
 			return
 		}
 		items = append(items, map[string]any{
-			"id": id, "hostname": hostname, "os_family": osFamily, "os_version": osVersion,
-			"status": status, "last_seen": lastSeen.String,
+			"id": id, "hostname": hostname, "os_family": osFamilyValue, "os_version": osVersion,
+			"status": deviceStatus, "last_seen": lastSeen.String,
 		})
 	}
 	if err := rows.Err(); err != nil {
 		write(w, http.StatusInternalServerError, response{"error": "database_error"})
 		return
 	}
-	write(w, http.StatusOK, response{"items": items, "count": len(items)})
+	write(w, http.StatusOK, response{
+		"items": items, "count": len(items), "total": total, "page": page, "page_size": pageSize,
+		"has_more": offset+len(items) < total,
+	})
 }
 
 // deviceDetail returns the endpoint's current identity and the latest payload for
