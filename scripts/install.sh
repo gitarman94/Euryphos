@@ -21,7 +21,7 @@ die() { printf '[euryphos] ERROR: %s\n' "$*" >&2; exit 1; }
 
 # Small terminal UI built from Bash and standard Debian utilities; no extra TUI
 # framework is required, so it works both in a console and when piped to Bash.
-if [[ -t 1 && -z "\${NO_COLOR:-}" ]]; then
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
   UI_RESET=$'\033[0m'
   UI_BOLD=$'\033[1m'
   UI_CYAN=$'\033[36m'
@@ -54,7 +54,7 @@ detect_cpu_count() {
   [[ "$count" =~ ^[0-9]+$ ]] || count=1
   if [[ -r /sys/fs/cgroup/cpu.max ]]; then
     read -r quota period < /sys/fs/cgroup/cpu.max || true
-    if [[ "\${quota:-max}" != "max" && "\${quota:-}" =~ ^[0-9]+$ && "\${period:-}" =~ ^[0-9]+$ && "$period" -gt 0 ]]; then
+    if [[ "${quota:-max}" != "max" && "${quota:-}" =~ ^[0-9]+$ && "${period:-}" =~ ^[0-9]+$ && "$period" -gt 0 ]]; then
       limited=$(( (quota + period - 1) / period ))
       (( limited < 1 )) && limited=1
       (( limited < count )) && count="$limited"
@@ -63,7 +63,7 @@ detect_cpu_count() {
     for quota_file in /sys/fs/cgroup/cpu/cpu.cfs_quota_us /sys/fs/cgroup/cpu,cpuacct/cpu.cfs_quota_us; do
       [[ -r "$quota_file" ]] || continue
       quota="$(cat "$quota_file" 2>/dev/null || true)"
-      period_file="\${quota_file%/*}/cpu.cfs_period_us"
+      period_file="${quota_file%/*}/cpu.cfs_period_us"
       period="$(cat "$period_file" 2>/dev/null || true)"
       if [[ "$quota" =~ ^[0-9]+$ && "$period" =~ ^[0-9]+$ && "$period" -gt 0 ]]; then
         limited=$(( (quota + period - 1) / period ))
@@ -100,22 +100,22 @@ preflight_resources() {
   local disk_total_kib disk_free_kib disk_total_bytes disk_free_bytes
   local warnings=0 reply
   ui_section "1/6  System and resource pre-flight"
-  ui_ok "Operating system: Debian \${VERSION_ID}; systemd is running."
+  ui_ok "Operating system: Debian ${VERSION_ID}; systemd is running."
   ui_ok "Architecture: $(uname -m)."
   cpu_count="$(detect_cpu_count)"
   if (( cpu_count < 2 )); then
-    ui_warn "CPU: \${cpu_count} vCPU visible. Increase to at least 2; 4 is recommended for larger fleets."
+    ui_warn "CPU: ${cpu_count} vCPU visible. Increase to at least 2; 4 is recommended for larger fleets."
     warnings=$((warnings + 1))
   elif (( cpu_count < 4 )); then
-    ui_ok "CPU: \${cpu_count} vCPU available (2 minimum; 4 recommended for larger fleets)."
+    ui_ok "CPU: ${cpu_count} vCPU available (2 minimum; 4 recommended for larger fleets)."
   else
-    ui_ok "CPU: \${cpu_count} vCPU available."
+    ui_ok "CPU: ${cpu_count} vCPU available."
   fi
   if memory_info="$(detect_memory_bytes)"; then
-    memory_bytes="\${memory_info%%|*}"
-    memory_source="\${memory_info#*|}"
+    memory_bytes="${memory_info%%|*}"
+    memory_source="${memory_info#*|}"
     if (( memory_bytes < 2147483648 )); then
-      ui_warn "RAM: $(format_gib "$memory_bytes") detected (\${memory_source}). Increase the CT to at least 2 GiB; 4 GiB is recommended."
+      ui_warn "RAM: $(format_gib "$memory_bytes") detected (${memory_source}). Increase the CT to at least 2 GiB; 4 GiB is recommended."
       warnings=$((warnings + 1))
     elif (( memory_bytes < 4294967296 )); then
       ui_ok "RAM: $(format_gib "$memory_bytes") detected (2 GiB baseline met; 4 GiB recommended)."
@@ -134,26 +134,26 @@ preflight_resources() {
   while [[ ! -d "$disk_probe" && "$disk_probe" != "/" ]]; do disk_probe="$(dirname "$disk_probe")"; done
   disk_stats="$(df -Pk "$disk_probe" 2>/dev/null | awk 'END { if (NF >= 4) print $2, $4 }')"
   read -r disk_total_kib disk_free_kib <<< "$disk_stats" || true
-  if [[ "\${disk_total_kib:-}" =~ ^[0-9]+$ && "\${disk_free_kib:-}" =~ ^[0-9]+$ ]]; then
+  if [[ "${disk_total_kib:-}" =~ ^[0-9]+$ && "${disk_free_kib:-}" =~ ^[0-9]+$ ]]; then
     disk_total_bytes=$((disk_total_kib * 1024))
     disk_free_bytes=$((disk_free_kib * 1024))
     if (( disk_total_bytes < 10737418240 || disk_free_bytes < 5368709120 )); then
-      ui_warn "Disk at \${disk_probe}: $(format_gib "$disk_total_bytes") total, $(format_gib "$disk_free_bytes") available."
+      ui_warn "Disk at ${disk_probe}: $(format_gib "$disk_total_bytes") total, $(format_gib "$disk_free_bytes") available."
       ui_warn "Baseline: at least 10 GiB total and 5 GiB free. Recommended: 20 GiB total and 10 GiB free."
       warnings=$((warnings + 1))
     elif (( disk_total_bytes < 21474836480 || disk_free_bytes < 10737418240 )); then
-      ui_ok "Disk at \${disk_probe}: $(format_gib "$disk_total_bytes") total, $(format_gib "$disk_free_bytes") available (baseline met)."
+      ui_ok "Disk at ${disk_probe}: $(format_gib "$disk_total_bytes") total, $(format_gib "$disk_free_bytes") available (baseline met)."
       ui_warn "Recommended: 20 GiB total and 10 GiB free; fleet inventory growth depends on device count and retention."
     else
-      ui_ok "Disk at \${disk_probe}: $(format_gib "$disk_total_bytes") total, $(format_gib "$disk_free_bytes") available."
+      ui_ok "Disk at ${disk_probe}: $(format_gib "$disk_total_bytes") total, $(format_gib "$disk_free_bytes") available."
     fi
   else
-    ui_warn "Disk: could not read filesystem capacity for \${disk_probe}."
+    ui_warn "Disk: could not read filesystem capacity for ${disk_probe}."
     warnings=$((warnings + 1))
   fi
   if (( warnings > 0 )); then
     printf '\n'
-    ui_warn "Pre-flight found \${warnings} warning(s). They do not automatically block a small test deployment, but undersized resources can make builds, startup, and database operations unreliable."
+    ui_warn "Pre-flight found ${warnings} warning(s). They do not automatically block a small test deployment, but undersized resources can make builds, startup, and database operations unreliable."
     if [[ -r /dev/tty && -w /dev/tty ]]; then
       printf 'Continue with installation using the detected resources? [y/N] ' > /dev/tty
       read -r reply < /dev/tty || reply=""
@@ -171,8 +171,8 @@ preflight_resources() {
 show_web_access() {
   local listen_addr port addresses ip found=0 cookie_secure
   listen_addr="$(read_env_value EURYPHOS_LISTEN)"
-  listen_addr="\${listen_addr:-:8080}"
-  port="\${listen_addr##*:}"
+  listen_addr="${listen_addr:-:8080}"
+  port="${listen_addr##*:}"
   cookie_secure="$(read_env_value EURYPHOS_COOKIE_SECURE)"
   ui_section "6/6  Installation complete"
   ui_ok "Euryphos service is active and passed its local health check."
@@ -202,7 +202,7 @@ show_web_access() {
     printf '\n'
     ui_warn "Secure cookies are disabled in the existing configuration. Use this HTTP URL only on an isolated trusted network; HTTPS is required before exposure."
   fi
-  ui_warn "Do not expose the raw HTTP listener on port \${port} directly to the public internet."
+  ui_warn "Do not expose the raw HTTP listener on port ${port} directly to the public internet."
 }
 
 [[ "$MODE" == "install" || "$MODE" == "upgrade" ]] || die "Usage: install.sh [install|upgrade]"
