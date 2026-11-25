@@ -103,6 +103,7 @@ func routes(s *Server) http.Handler {
 	mux.HandleFunc("GET /api/v1/devices", s.admin(s.devices))
 	mux.HandleFunc("GET /api/v1/devices/{id}", s.admin(s.deviceDetail))
 	mux.HandleFunc("GET /api/v1/devices/{id}/inventory/history", s.admin(s.inventoryHistory))
+	mux.HandleFunc("GET /api/v1/jobs", s.admin(s.listJobs))
 	mux.HandleFunc("POST /api/v1/jobs", s.admin(s.createJob))
 	mux.HandleFunc("GET /api/v1/devices/{id}/jobs/next", s.deviceAuth(s.nextJob))
 	mux.HandleFunc("POST /api/v1/devices/{id}/jobs/{job}/result", s.deviceAuth(s.jobResult))
@@ -2172,6 +2173,67 @@ func (s *Server) jobResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	write(w, http.StatusOK, response{"status": "recorded"})
+}
+
+func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
+	page, pageSize := 1, 50
+	if raw := r.URL.Query().Get("page"); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1 || value > 1000000 {
+			write(w, http.StatusBadRequest, response{"error": "invalid_page"})
+			return
+		}
+		page = value
+	}
+	if raw := r.URL.Query().Get("page_size"); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1 || value > 200 {
+			write(w, http.StatusBadRequest, response{"error": "invalid_page_size", "max": 200})
+			return
+		}
+		pageSize = value
+	}
+	var total int
+	if err := s.db.QueryRowContext(r.Context(), "SELECT count(*) FROM jobs").Scan(&total); err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "job_list_count_failed"})
+		return
+	}
+	rows, err := s.db.QueryContext(r.Context(), `SELECT j.id,j.action,j.status,j.created_at,
+		count(t.device_id),
+		COALESCE(sum(CASE WHEN t.status='succeeded' THEN 1 ELSE 0 END),0),
+		COALESCE(sum(CASE WHEN t.status='failed' THEN 1 ELSE 0 END),0),
+		COALESCE(sum(CASE WHEN t.status='running' THEN 1 ELSE 0 END),0),
+		COALESCE(sum(CASE WHEN t.status='queued' OR t.status='received' THEN 1 ELSE 0 END),0)
+		FROM jobs j LEFT JOIN job_targets t ON t.job_id=j.id
+		GROUP BY j.id ORDER BY j.created_at DESC,j.id DESC LIMIT ? OFFSET ?`,
+		pageSize, (page-1)*pageSize)
+	if err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "job_list_read_failed"})
+		return
+	}
+	defer rows.Close()
+	items := []map[string]any{}
+	for rows.Next() {
+		var id, action, status, createdAt string
+		var targetCount, succeeded, failed, running, pending int
+		if err := rows.Scan(&id,&action,&status,&createdAt,&targetCount,&succeeded,&failed,&running,&pending); err != nil {
+			write(w, http.StatusInternalServerError, response{"error": "job_list_read_failed"})
+			return
+		}
+		items = append(items, map[string]any{
+			"id":id,"action":action,"status":status,"created_at":createdAt,
+			"target_count":targetCount,"succeeded":succeeded,"failed":failed,"running":running,"pending":pending,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		write(w, http.StatusInternalServerError, response{"error": "job_list_read_failed"})
+		return
+	}
+	offset := (page-1)*pageSize
+	write(w, http.StatusOK, response{
+		"items":items,"count":len(items),"total":total,"page":page,"page_size":pageSize,
+		"has_more":offset+len(items)<total,
+	})
 }
 
 func (s *Server) getJob(w http.ResponseWriter, r *http.Request) {
