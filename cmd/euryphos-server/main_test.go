@@ -384,9 +384,26 @@ func TestJobClaimsRejectStaleResultsAndAcceptDuplicateTerminalResults(t *testing
 
 	startedBody := `{"claim_id":"`+claimed.Job.ClaimID+`","status":"started","result":{"message":"started"}}`
 	performRequest(t, handler, http.MethodPost, resultPath, token, startedBody, http.StatusOK)
+	var beforeHeartbeat string
+	if err := db.QueryRowContext(ctx,
+		"SELECT updated_at FROM job_targets WHERE job_id=? AND device_id=?", jobID, deviceID).Scan(&beforeHeartbeat); err != nil {
+		t.Fatalf("read initial running timestamp: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		"UPDATE job_targets SET updated_at=datetime('now','-3 minutes') WHERE job_id=? AND device_id=?", jobID, deviceID); err != nil {
+		t.Fatalf("age running job timestamp: %v", err)
+	}
 	duplicateStarted := performRequest(t, handler, http.MethodPost, resultPath, token, startedBody, http.StatusOK)
-	if !strings.Contains(string(duplicateStarted), `"status":"already_recorded"`) {
-		t.Fatalf("duplicate started acknowledgement was not idempotently acknowledged: %s", duplicateStarted)
+	if !strings.Contains(string(duplicateStarted), `"status":"heartbeat_recorded"`) {
+		t.Fatalf("duplicate started acknowledgement did not renew running timestamp: %s", duplicateStarted)
+	}
+	var renewedAt string
+	if err := db.QueryRowContext(ctx,
+		"SELECT updated_at FROM job_targets WHERE job_id=? AND device_id=?", jobID, deviceID).Scan(&renewedAt); err != nil {
+		t.Fatalf("read renewed running timestamp: %v", err)
+	}
+	if renewedAt <= beforeHeartbeat {
+		t.Fatalf("running timestamp was not renewed: before=%q after=%q", beforeHeartbeat, renewedAt)
 	}
 	succeededBody := `{"claim_id":"`+claimed.Job.ClaimID+`","status":"succeeded","result":{"message":"done"}}`
 	performRequest(t, handler, http.MethodPost, resultPath, token, succeededBody, http.StatusOK)
