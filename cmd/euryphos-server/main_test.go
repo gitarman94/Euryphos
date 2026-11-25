@@ -279,11 +279,35 @@ func TestSQLiteServerAgentProtocol(t *testing.T) {
 	}
 
 	nextJob := performRequest(t, handler, http.MethodGet, "/api/v1/devices/"+enrollment.DeviceID+"/jobs/next", enrollment.DeviceToken, "", http.StatusOK)
-	if !strings.Contains(string(nextJob), jobCreated.JobID) || !strings.Contains(string(nextJob), "inventory.refresh") {
-		t.Fatalf("agent did not receive queued job: %s", nextJob)
+	var claimed struct {
+		Job *struct {
+			ID string `json:"id"`
+			Action string `json:"action"`
+			ClaimID string `json:"claim_id"`
+			Attempt int `json:"attempt"`
+		} `json:"job"`
 	}
-	performRequest(t, handler, http.MethodPost, "/api/v1/devices/"+enrollment.DeviceID+"/jobs/"+jobCreated.JobID+"/result", enrollment.DeviceToken,
-		`{"status":"succeeded","result":{"message":"refreshed"}}`, http.StatusOK)
+	if err := json.Unmarshal(nextJob, &claimed); err != nil {
+		t.Fatalf("decode claimed job: %v", err)
+	}
+	if claimed.Job == nil || claimed.Job.ID != jobCreated.JobID || claimed.Job.Action != "inventory.refresh" ||
+		len(claimed.Job.ClaimID) != 36 || claimed.Job.Attempt != 1 {
+		t.Fatalf("agent did not receive a unique first-attempt claim: %s", nextJob)
+	}
+	resultBody, err := json.Marshal(map[string]any{
+		"claim_id": claimed.Job.ClaimID,
+		"status": "succeeded",
+		"result": map[string]any{"message": "refreshed"},
+	})
+	if err != nil {
+		t.Fatalf("encode job result: %v", err)
+	}
+	resultPath := "/api/v1/devices/"+enrollment.DeviceID+"/jobs/"+jobCreated.JobID+"/result"
+	performRequest(t, handler, http.MethodPost, resultPath, enrollment.DeviceToken, string(resultBody), http.StatusOK)
+	duplicateResult := performRequest(t, handler, http.MethodPost, resultPath, enrollment.DeviceToken, string(resultBody), http.StatusOK)
+	if !strings.Contains(string(duplicateResult), `"status":"already_recorded"`) {
+		t.Fatalf("duplicate result should be idempotently acknowledged: %s", duplicateResult)
+	}
 	jobStatus := performRequest(t, handler, http.MethodGet, "/api/v1/jobs/"+jobCreated.JobID, "admin-test-token", "", http.StatusOK)
 	if !strings.Contains(string(jobStatus), `"status":"completed"`) {
 		t.Fatalf("job did not reach completed state: %s", jobStatus)
@@ -291,6 +315,132 @@ func TestSQLiteServerAgentProtocol(t *testing.T) {
 	var jobAuditRows int
 	if err := db.QueryRow("SELECT count(*) FROM audit_log WHERE event_type='job.execution.result' AND target_id=?", jobCreated.JobID).Scan(&jobAuditRows); err != nil || jobAuditRows != 1 {
 		t.Fatalf("job result audit event missing: rows=%d error=%v", jobAuditRows, err)
+	}
+}
+
+func TestJobClaimsRejectStaleResultsAndAcceptDuplicateTerminalResults(t *testing.T) {
+	db, err := openDatabase(filepath.Join(t.TempDir(), "job-claims.db"))
+	if err != nil {
+		t.Fatalf("open SQLite database: %v", err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := migrate(ctx, db); err != nil {
+		t.Fatalf("migrate database: %v", err)
+	}
+
+	const deviceID = "device-claim-test"
+	const jobID = "job-claim-test"
+	const token = "claim-test-token"
+	const oldClaimID = "11111111-1111-4111-8111-111111111111"
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO devices(id,status,token_hash) VALUES(?, 'approved', ?)", deviceID, hash(token)); err != nil {
+		t.Fatalf("insert device: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO jobs(id,action,payload,status) VALUES(?, 'inventory.refresh', '{}', 'queued')", jobID); err != nil {
+		t.Fatalf("insert job: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO job_targets(
+		job_id,device_id,status,claim_id,attempt_count,updated_at)
+		VALUES(?,?,'received',?,1,datetime('now','-16 minutes'))`,
+		jobID, deviceID, oldClaimID); err != nil {
+		t.Fatalf("insert expired delivery claim: %v", err)
+	}
+
+	handler := securityHeaders(routes(&Server{db: db}))
+	claimedBody := performRequest(t, handler, http.MethodGet,
+		"/api/v1/devices/"+deviceID+"/jobs/next", token, "", http.StatusOK)
+	var claimed struct {
+		Job *struct {
+			ID string `json:"id"`
+			ClaimID string `json:"claim_id"`
+			Attempt int `json:"attempt"`
+		} `json:"job"`
+	}
+	if err := json.Unmarshal(claimedBody, &claimed); err != nil {
+		t.Fatalf("decode reclaimed job: %v", err)
+	}
+	if claimed.Job == nil || claimed.Job.ID != jobID || claimed.Job.ClaimID == "" ||
+		claimed.Job.ClaimID == oldClaimID || claimed.Job.Attempt != 2 {
+		t.Fatalf("reclaimed job did not receive a new claim and incremented attempt: %s", claimedBody)
+	}
+
+	resultPath := "/api/v1/devices/"+deviceID+"/jobs/"+jobID+"/result"
+	oldResult := `{"claim_id":"`+oldClaimID+`","status":"succeeded","result":{"message":"stale"}}`
+	performRequest(t, handler, http.MethodPost, resultPath, token, oldResult, http.StatusConflict)
+
+	var status, activeClaim string
+	var attempts int
+	if err := db.QueryRowContext(ctx,
+		"SELECT status,claim_id,attempt_count FROM job_targets WHERE job_id=? AND device_id=?", jobID, deviceID).
+		Scan(&status, &activeClaim, &attempts); err != nil {
+		t.Fatalf("read active delivery attempt: %v", err)
+	}
+	if status != "received" || activeClaim != claimed.Job.ClaimID || attempts != 2 {
+		t.Fatalf("stale result changed active attempt: status=%q claim=%q attempts=%d", status, activeClaim, attempts)
+	}
+
+	startedBody := `{"claim_id":"`+claimed.Job.ClaimID+`","status":"started","result":{"message":"started"}}`
+	performRequest(t, handler, http.MethodPost, resultPath, token, startedBody, http.StatusOK)
+	succeededBody := `{"claim_id":"`+claimed.Job.ClaimID+`","status":"succeeded","result":{"message":"done"}}`
+	performRequest(t, handler, http.MethodPost, resultPath, token, succeededBody, http.StatusOK)
+	duplicate := performRequest(t, handler, http.MethodPost, resultPath, token, succeededBody, http.StatusOK)
+	if !strings.Contains(string(duplicate), `"status":"already_recorded"`) {
+		t.Fatalf("duplicate terminal result was not idempotently acknowledged: %s", duplicate)
+	}
+	conflictingTerminal := `{"claim_id":"`+claimed.Job.ClaimID+`","status":"failed","error":"late-conflict"}`
+	performRequest(t, handler, http.MethodPost, resultPath, token, conflictingTerminal, http.StatusConflict)
+
+	if err := db.QueryRowContext(ctx,
+		"SELECT count(*) FROM audit_log WHERE event_type='job.execution.result' AND target_id=?", jobID).Scan(&attempts); err != nil {
+		t.Fatalf("count accepted result audit events: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected only started and succeeded audit events, got %d", attempts)
+	}
+}
+
+func TestMigrationAddsJobClaimColumnsToExistingDatabase(t *testing.T) {
+	db, err := openDatabase(filepath.Join(t.TempDir(), "job-claim-migration.db"))
+	if err != nil {
+		t.Fatalf("open SQLite database: %v", err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := db.ExecContext(ctx, `CREATE TABLE job_targets (
+		job_id TEXT NOT NULL,
+		device_id TEXT NOT NULL,
+		status TEXT NOT NULL DEFAULT 'queued',
+		result TEXT,
+		error TEXT,
+		updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY(job_id,device_id)
+	)`); err != nil {
+		t.Fatalf("create previous-version job_targets table: %v", err)
+	}
+	if err := migrate(ctx, db); err != nil {
+		t.Fatalf("upgrade previous-version database in place: %v", err)
+	}
+	var claimID sql.NullString
+	var attemptCount int
+	if err := db.QueryRowContext(ctx,
+		"SELECT claim_id,attempt_count FROM job_targets LIMIT 1").Scan(&claimID, &attemptCount); err != nil && err != sql.ErrNoRows {
+		t.Fatalf("query additive job claim columns: %v", err)
+	}
+	var columns int
+	if err := db.QueryRowContext(ctx,
+		"SELECT count(*) FROM pragma_table_info('job_targets') WHERE name IN ('claim_id','attempt_count')").Scan(&columns); err != nil {
+		t.Fatalf("inspect job_targets schema: %v", err)
+	}
+	if columns != 2 {
+		t.Fatalf("expected additive claim columns on existing table, got %d", columns)
+	}
+	if err := db.QueryRowContext(ctx,
+		"SELECT count(*) FROM schema_migrations WHERE version=13").Scan(&columns); err != nil || columns != 1 {
+		t.Fatalf("schema version 13 marker missing: count=%d error=%v", columns, err)
 	}
 }
 
