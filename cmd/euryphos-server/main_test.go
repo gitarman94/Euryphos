@@ -647,6 +647,41 @@ func TestStaticGroupMembershipAddAndRemove(t *testing.T) {
 	if added != 1 || removed != 1 { t.Fatalf("static membership audit missing: added=%d removed=%d",added,removed) }
 }
 
+func TestDuplicateIdentityQueriesUseIndexes(t *testing.T) {
+	db, err := openDatabase(filepath.Join(t.TempDir(), "identity-indexes.db"))
+	if err != nil { t.Fatal(err) }
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := migrate(ctx, db); err != nil { t.Fatal(err) }
+	checkPlan := func(query string, args ...any) string {
+		t.Helper()
+		rows, err := db.QueryContext(ctx, "EXPLAIN QUERY PLAN "+query, args...)
+		if err != nil { t.Fatal(err) }
+		defer rows.Close()
+		var details []string
+		for rows.Next() {
+			var id, parent, notUsed int
+			var detail string
+			if err := rows.Scan(&id,&parent,&notUsed,&detail); err != nil { t.Fatal(err) }
+			details = append(details, detail)
+		}
+		if err := rows.Err(); err != nil { t.Fatal(err) }
+		return strings.Join(details," ")
+	}
+	uuidPlan := checkPlan(`SELECT id FROM devices
+		WHERE lower(replace(replace(replace(replace(smbios_uuid,'-',''),'{',''),'}',''),' ',''))=?`, "11112222333344445555666677778888")
+	if !strings.Contains(uuidPlan,"idx_devices_smbios_uuid_normalized") {
+		t.Fatalf("SMBIOS duplicate lookup is not using its expression index: %s",uuidPlan)
+	}
+	serialPlan := checkPlan(`SELECT id FROM devices
+		WHERE lower(trim(serial_number))=? AND lower(trim(manufacturer))=? AND lower(trim(model))=?`,
+		"serial-1","vendor","model")
+	if !strings.Contains(serialPlan,"idx_devices_hardware_identity") {
+		t.Fatalf("serial/manufacturer/model duplicate lookup is not using its composite expression index: %s",serialPlan)
+	}
+}
+
 func performRequest(t *testing.T, handler http.Handler, method, path, token, body string, expectedStatus int) []byte {
 	t.Helper()
 	var requestBody *bytes.Reader
