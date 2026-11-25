@@ -114,10 +114,10 @@ Backups must use SQLite's online backup API or a tested quiesced procedure. A li
 - `installed_software`: normalized package/application records.
 - `device_duplicate_candidates`: reviewable possible duplicate pairs.
 - `machine_groups`, `device_group_memberships`: static/dynamic machine groups and resolved membership.
-- `jobs`, `job_targets`, `job_group_targets`: parent jobs, per-device execution state, and immutable group-selection snapshots.
+- `jobs`, `job_targets`, `job_group_targets`: parent jobs, per-device execution state, and immutable group-selection snapshots. Each target stores a unique current `claim_id` plus an incrementing `attempt_count`; this identifies delivery generations and prevents a delayed result from an older claim from overwriting a newer attempt.
 - `audit_log`: initial operational events.
 - `admin_sessions`: hashed server-side browser sessions and CSRF material.
-- `schema_migrations`: startup schema marker table. The schema is defined only in Go in `migrate()`; there is no standalone SQL migration file or second schema copy. The current startup routine creates missing tables and indexes and additively adds missing columns, with markers through version **12**. This is intentionally an in-code, idempotent schema initializer for the ground-up product. Future upgrades must preserve existing device rows, identifiers, credentials, inventory, groups, memberships, jobs, job outcomes, audit records, and sessions. Do not drop, truncate, recreate, or reset populated tables during an ordinary application upgrade. Any non-additive data transformation requires an explicit tested conversion and a verified backup/restore path before it can ship.
+- `schema_migrations`: startup schema marker table. The schema is defined only in Go in `migrate()`; there is no standalone SQL migration file or second schema copy. The current startup routine creates missing tables and indexes and additively adds missing columns, with markers through version **13**. This is intentionally an in-code, idempotent schema initializer for the ground-up product. Future upgrades must preserve existing device rows, identifiers, credentials, inventory, groups, memberships, jobs, job outcomes, audit records, and sessions. Do not drop, truncate, recreate, or reset populated tables during an ordinary application upgrade. Any non-additive data transformation requires an explicit tested conversion and a verified backup/restore path before it can ship.
 
 JSON is retained for extensible provider payloads, not as a substitute for typed columns on frequently queried facts. Never create columns from arbitrary client-supplied field names. Timestamps are stored in UTC. Child-table replacement must respect collection status: unsupported, unavailable, failed, or permission-denied collection must not erase last-known good records.
 
@@ -184,9 +184,11 @@ The allowlist is not proof that an agent executor exists. Server-side validation
 
 ### Current job delivery behavior and known limitation
 
-The server atomically marks a queued device target as `received` when the agent polls. Recent code adds a **10-minute receive lease**: when that same device polls again, an old unacknowledged `received` target is returned to `queued`, recorded as `job.target.requeued`, and can be claimed again. Recovery is indexed by device/status/time. A job already in `running` may still dispatch its other queued device targets.
+The server atomically marks a queued device target as `received` when the agent polls. The response includes a random per-delivery `claim_id` and a per-target `attempt` counter. A new claim ID is generated every time a queued target is claimed; the attempt counter increments. A **10-minute receive lease** returns an unacknowledged `received` target to `queued`, clears its previous claim ID, records `job.target.requeued`, and permits a new claim. Recovery is indexed by device/status/time. A job already in `running` may still dispatch its other queued device targets.
 
-This is only a minimal recovery improvement. The current implementation does not yet provide a complete lease/attempt system, lease renewal/progress, explicit job expiry, global stale-job sweeper, bounded retry policy, robust cancellation, or end-to-end exactly-once semantics. If an endpoint completes a non-idempotent action but fails before reporting its result, a retry can execute it again. Do not claim exactly-once delivery. The 10-minute receive timeout must not be mistaken for a safe timeout for a long-running operation.
+The agent must include the returned `claim_id` in every result update. The server rejects results from stale claims with HTTP 409, so a delayed result from an expired/reclaimed delivery cannot overwrite the newer attempt. Result processing accepts only an active `received`/`running` target. A repeated terminal result with the same claim and same terminal status is acknowledged as `already_recorded` without duplicating the audit event; a conflicting terminal status is rejected. The `started` transition moves `received` to `running`; a matching terminal result then completes it. Results and claim IDs are covered by server regression tests, and the agent passes the claim ID through its executor to the result request.
+
+This is an incremental attempt identity and result-deduplication safeguard, **not** exactly-once execution or a complete retry system. The agent does not yet persist a local execution journal across process restarts. If an endpoint executes a non-idempotent action but loses the result before the server records it, a later attempt may repeat that action. There is no running lease renewal/progress, explicit job expiry, global stale-job sweeper, bounded retry/backoff, or robust cancellation. The 10-minute receive timeout must not be mistaken for a safe timeout for a long-running operation.
 
 ### Browser console
 
@@ -199,8 +201,8 @@ Endpoint/device-authenticated routes:
 - `POST /api/v1/enrollment` — enrollment-token bearer.
 - `POST /api/v1/devices/{id}/heartbeat` — approved device bearer.
 - `POST /api/v1/devices/{id}/inventory` — approved device bearer.
-- `GET /api/v1/devices/{id}/jobs/next` — atomically claim one queued device target.
-- `POST /api/v1/devices/{id}/jobs/{job}/result` — report started/succeeded/failed/cancelled outcome.
+- `GET /api/v1/devices/{id}/jobs/next` — atomically claim one queued device target; a returned job includes `claim_id` and incrementing `attempt`.
+- `POST /api/v1/devices/{id}/jobs/{job}/result` — report started/succeeded/failed/cancelled outcome and the required `claim_id`; stale claims are rejected and duplicate matching terminal results are idempotently acknowledged.
 
 Administrator-authenticated routes:
 
@@ -220,7 +222,7 @@ Keep `Euryphos-Agent/docs/PROJECT_HANDOFF.md` synchronized with actual handler b
 
 ### Server CI
 
-GitHub Actions run **[45625382270](https://github.com/gitarman94/Euryphos/actions/runs/45625382270)** on server main HEAD `a9d61eda99eb8e355acc0a0ad2e2534dbee79fb8` completed successfully on 2026-11-25. It passed:
+GitHub Actions run **[45626698821](https://github.com/gitarman94/Euryphos/actions/runs/45626698821)** on server commit `c3212f445259f4998e48085272d7d5e497594f50` completed successfully on 2026-11-25. It passed:
 
 - `go mod tidy`
 - `go test ./...`
@@ -228,7 +230,7 @@ GitHub Actions run **[45625382270](https://github.com/gitarman94/Euryphos/action
 - `bash -n scripts/install.sh`
 - `go build -trimpath ./cmd/euryphos-server`
 
-This includes graceful SIGINT/SIGTERM HTTP shutdown, SQLite close, Debian installer syntax and release-archive extraction safeguards, and the existing SQLite/API regression suite. It does not execute the installer inside Debian 13 or execute the tag-triggered release workflow.
+This includes additive job-claim schema upgrade to version 13, stale claim rejection, duplicate terminal-result acknowledgment, attempt counter regression coverage, graceful SIGINT/SIGTERM shutdown, SQLite close, Debian installer syntax and the existing SQLite/API regression suite. It does not execute the installer inside Debian 13 or execute the tag-triggered release workflow.
 
 ### Agent CI
 
